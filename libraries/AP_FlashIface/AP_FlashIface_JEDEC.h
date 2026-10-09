@@ -28,6 +28,10 @@ class AP_FlashIface_JEDEC : public AP_FlashIface
 {
 public:
     bool init() override;
+    const char *get_last_error() const
+    {
+        return last_error[0] != '\0' ? last_error : nullptr;
+    }
 
     /**
      * @details Read data from flash chip.
@@ -302,5 +306,8 @@ protected:
     uint8_t _dev_list_idx;
     bool initialised;
     bool write_enable_called;
+    char last_error[48] {};
+
+    void set_last_error(const char *msg);
 };
 

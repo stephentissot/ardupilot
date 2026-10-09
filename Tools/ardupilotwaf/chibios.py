@@ -743,10 +743,17 @@ def build(bld):
 
     # make ccache effective on ChibiOS builds
     os.environ['CCACHE_IGNOREOPTIONS'] = '--specs=nano.specs --specs=nosys.specs'
+
+    # Waf expands these paths with Windows separators, but the ChibiOS make
+    # rules are consumed by sh/make and behave more reliably with forward slashes.
+    for key in ('BUILDDIR_REL', 'BUILDROOT', 'CH_ROOT_REL', 'AP_HAL_REL', 'BOARD_MK'):
+        value = bld.env.get_flat(key)
+        if value:
+            bld.env[key] = value.replace('\\', '/')
     
     bld(
         # create the file modules/ChibiOS/include_dirs
-        rule="BUILDDIR=${BUILDDIR_REL} BUILDROOT=${BUILDROOT} CHIBIOS=${CH_ROOT_REL} AP_HAL=${AP_HAL_REL} ${CHIBIOS_BUILD_FLAGS} ${CHIBIOS_BOARD_NAME} ${MAKE} pass -f '${BOARD_MK}'",
+        rule='${MAKE} BUILDDIR=${BUILDDIR_REL} BUILDROOT=${BUILDROOT} CHIBIOS=${CH_ROOT_REL} AP_HAL=${AP_HAL_REL} ${CHIBIOS_BUILD_FLAGS} ${CHIBIOS_BOARD_NAME} pass -f "${BOARD_MK}"',
         group='dynamic_sources',
         target=bld.bldnode.find_or_declare('modules/ChibiOS/include_dirs')
     )
@@ -774,7 +781,7 @@ def build(bld):
     if bld.env.ENABLE_CRASHDUMP:
         ch_task = bld(
             # build libch.a from ChibiOS sources and hwdef.h
-            rule="BUILDDIR='${BUILDDIR_REL}' BUILDROOT='${BUILDROOT}' ENABLE_CRASHDUMP=yes CHIBIOS='${CH_ROOT_REL}' AP_HAL=${AP_HAL_REL} ${CHIBIOS_BUILD_FLAGS} ${CHIBIOS_BOARD_NAME} ${HAL_MAX_STACK_FRAME_SIZE} '${MAKE}' -j%u lib -f '${BOARD_MK}'" % bld.options.jobs,
+            rule='${MAKE} BUILDDIR=${BUILDDIR_REL} BUILDROOT=${BUILDROOT} ENABLE_CRASHDUMP=yes CHIBIOS=${CH_ROOT_REL} AP_HAL=${AP_HAL_REL} ${CHIBIOS_BUILD_FLAGS} ${CHIBIOS_BOARD_NAME} ${HAL_MAX_STACK_FRAME_SIZE} -j%u lib -f "${BOARD_MK}"' % bld.options.jobs,
             group='dynamic_sources',
             source=common_src,
             target=[
@@ -785,7 +792,7 @@ def build(bld):
     else:
         ch_task = bld(
             # build libch.a from ChibiOS sources and hwdef.h
-            rule="BUILDDIR='${BUILDDIR_REL}' BUILDROOT='${BUILDROOT}' CHIBIOS='${CH_ROOT_REL}' AP_HAL=${AP_HAL_REL} ${CHIBIOS_BUILD_FLAGS} ${CHIBIOS_BOARD_NAME} ${HAL_MAX_STACK_FRAME_SIZE} '${MAKE}' -j%u lib -f '${BOARD_MK}'" % bld.options.jobs,
+            rule='${MAKE} BUILDDIR=${BUILDDIR_REL} BUILDROOT=${BUILDROOT} CHIBIOS=${CH_ROOT_REL} AP_HAL=${AP_HAL_REL} ${CHIBIOS_BUILD_FLAGS} ${CHIBIOS_BOARD_NAME} ${HAL_MAX_STACK_FRAME_SIZE} -j%u lib -f "${BOARD_MK}"' % bld.options.jobs,
             group='dynamic_sources',
             source=common_src,
             target=bld.bldnode.find_or_declare('modules/ChibiOS/libch.a')

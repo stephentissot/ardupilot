@@ -786,9 +786,12 @@ class ChibiOSHWDef(hwdef.HWDef):
             self.env_vars['HAL_CANFD_SUPPORTED'] = canfd_supported
 
     def has_dataflash_spi(self):
-        '''check for dataflash connected to spi bus'''
+        '''check for dataflash connected to spi or wspi bus'''
         for dev in self.spidev:
             if dev[0] == 'dataflash':
+                return True
+        for dev in self.wspidev:
+            if dev[0] in ['dataflash', 'mt25q', 'w25q', 'fm25q', 'w25q-dtr']:
                 return True
         return False
 

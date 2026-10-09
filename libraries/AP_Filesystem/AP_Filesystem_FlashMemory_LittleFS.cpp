@@ -23,9 +23,9 @@
 
 #if AP_FILESYSTEM_LITTLEFS_ENABLED
 
+#include <AP_Math/AP_Math.h>
 #include "AP_Filesystem.h"
 #include "AP_Filesystem_FlashMemory_LittleFS.h"
-#include <GCS_MAVLink/GCS.h>
 #include <AP_RTC/AP_RTC.h>
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
@@ -482,9 +482,9 @@ bool AP_Filesystem_FlashMemory_LittleFS::retry_mount(void)
         }
 
         return true;
-    } else {
-        return false;
     }
+
+    return false;
 }
 
 void AP_Filesystem_FlashMemory_LittleFS::unmount(void)
@@ -645,6 +645,10 @@ void AP_Filesystem_FlashMemory_LittleFS::mark_dead()
 
 bool AP_Filesystem_FlashMemory_LittleFS::is_busy()
 {
+    if (use_wspi_flash) {
+        return wspi_dev.is_device_busy();
+    }
+
     WITH_SEMAPHORE(dev_sem);
     uint8_t status;
 #if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
@@ -722,113 +726,124 @@ const static struct lfs_filebd_config fbd_config {
 #endif
 
 uint32_t AP_Filesystem_FlashMemory_LittleFS::find_block_size_and_count() {
+    uint32_t id = 0;
 #if CONFIG_HAL_BOARD != HAL_BOARD_SITL
-    if (!wait_until_device_is_ready()) {
-        return false;
+    if (use_wspi_flash) {
+        id = 1;
+        fs_cfg.read_size = wspi_dev.get_page_size();
+        fs_cfg.prog_size = fs_cfg.read_size;
+        fs_cfg.block_size = wspi_dev.get_sector_size();
+        fs_cfg.block_count = wspi_dev.get_sector_count();
+        fs_cfg.metadata_max = 4096;
+        fs_cfg.compact_thresh = 4096*0.88f;
+    } else {
+        if (!wait_until_device_is_ready()) {
+            return false;
+        }
+
+        WITH_SEMAPHORE(dev_sem);
+
+        // Read manufacturer ID
+        uint8_t cmd = JEDEC_DEVICE_ID;
+        uint8_t buf[4];
+        dev->transfer(&cmd, 1, buf, 4);
+
+#if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
+        id = buf[1] << 16 | buf[2] << 8 | buf[3];
+#else
+        id = buf[0] << 16 | buf[1] << 8 | buf[2];
+#endif
+
+        // Let's specify the terminology here.
+        //
+        // 1 block = smallest unit that we _erase_ in a single operation
+        // 1 page = smallest unit that we read or program in a single operation
+        //
+        // regardless of what the flash chip documentation refers to as a "block"
+
+#if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
+        // these NAND chips have 2048 byte pages and 128K erase blocks
+        lfs_size_t page_size = 2048;
+        lfs_size_t block_size = 131072;
+#else
+        // typical JEDEC-ish NOR flash chips have 256 byte pages and 64K blocks.
+        // many also support smaller erase sizes like 4K "sectors", but the largest
+        // block size is fastest to erase in bytes per second by 3-5X so we use
+        // that. be aware that worst case erase time can be seconds!
+        lfs_size_t page_size = 256;
+        lfs_size_t block_size = 65536;
+#endif
+
+        lfs_size_t block_count;
+        switch (id) {
+#if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
+        case JEDEC_ID_WINBOND_W25N01GV:
+            block_count = 1024;   /* 128MiB */
+            break;
+        case JEDEC_ID_WINBOND_W25N02KV:
+            block_count = 2048;   /* 256MiB */
+            break;
+#else
+        case JEDEC_ID_WINBOND_W25Q16:
+        case JEDEC_ID_MICRON_M25P16:
+        case JEDEC_ID_GIGA_GD25Q16E:
+            block_count = 32;     /* 2MiB */
+            break;
+
+        case JEDEC_ID_WINBOND_W25Q32:
+        case JEDEC_ID_WINBOND_W25X32:
+        case JEDEC_ID_MACRONIX_MX25L3206E:
+            block_count = 64;     /* 4MiB */
+            break;
+
+        case JEDEC_ID_MICRON_N25Q064:
+        case JEDEC_ID_WINBOND_W25Q64:
+        case JEDEC_ID_FMSH_FM25Q64:
+        case JEDEC_ID_MACRONIX_MX25L6406E:
+        case JEDEC_ID_CYPRESS_S25FL064L:
+            block_count = 128;    /* 8MiB */
+            break;
+
+        case JEDEC_ID_MICRON_N25Q128:
+        case JEDEC_ID_WINBOND_W25Q128:
+        case JEDEC_ID_WINBOND_W25Q128_2:
+        case JEDEC_ID_CYPRESS_S25FL128L:
+        case JEDEC_ID_ZBIT_ZB25VQ128:
+        case JEDEC_ID_FMSH_FM25Q128A:
+        case JEDEC_ID_XTX_XT25F128F:
+            block_count = 256;    /* 16MiB */
+            break;
+
+        case JEDEC_ID_WINBOND_W25Q256:
+        case JEDEC_ID_MACRONIX_MX25L25635E:
+        case JEDEC_ID_FMSH_FM25Q256:
+            block_count = 512;    /* 32MiB */
+            use_32bit_address = true;
+            break;
+#endif
+        default:
+            block_count = 0;
+            hal.scheduler->delay(2000);
+            printf("Unknown SPI Flash 0x%08x\n", id);
+            return 0;
+        }
+
+        fs_cfg.read_size = page_size;
+        fs_cfg.prog_size = page_size; // we assume this is equal to read_size!
+        fs_cfg.block_size = block_size;
+        fs_cfg.block_count = block_count;
+
+        // larger metadata blocks mean less frequent compaction operations, but each
+        // takes longer. however, the total time spent compacting for a given file
+        // size still goes down with larger metadata blocks. 4096 was chosen to
+        // minimize both frequency and log buffer utilization.
+        fs_cfg.metadata_max = 4096;
+        fs_cfg.compact_thresh = 4096*0.88f;
+#if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
+        fs_cfg.metadata_max = page_size * 2;
+        fs_cfg.compact_thresh = fs_cfg.metadata_max * 0.88f;
+#endif
     }
-
-    WITH_SEMAPHORE(dev_sem);
-
-    // Read manufacturer ID
-    uint8_t cmd = JEDEC_DEVICE_ID;
-    uint8_t buf[4];
-    dev->transfer(&cmd, 1, buf, 4);
-
-#if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
-    uint32_t id = buf[1] << 16 | buf[2] << 8 | buf[3];
-#else
-    uint32_t id = buf[0] << 16 | buf[1] << 8 | buf[2];
-#endif
-
-    // Let's specify the terminology here.
-    //
-    // 1 block = smallest unit that we _erase_ in a single operation
-    // 1 page = smallest unit that we read or program in a single operation
-    //
-    // regardless of what the flash chip documentation refers to as a "block"
-
-#if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
-    // these NAND chips have 2048 byte pages and 128K erase blocks
-    lfs_size_t page_size = 2048;
-    lfs_size_t block_size = 131072;
-#else
-    // typical JEDEC-ish NOR flash chips have 256 byte pages and 64K blocks.
-    // many also support smaller erase sizes like 4K "sectors", but the largest
-    // block size is fastest to erase in bytes per second by 3-5X so we use
-    // that. be aware that worst case erase time can be seconds!
-    lfs_size_t page_size = 256;
-    lfs_size_t block_size = 65536;
-#endif
-
-    lfs_size_t block_count;
-    switch (id) {
-#if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
-    case JEDEC_ID_WINBOND_W25N01GV:
-        block_count = 1024;   /* 128MiB */
-        break;
-    case JEDEC_ID_WINBOND_W25N02KV:
-        block_count = 2048;   /* 256MiB */
-        break;
-#else
-    case JEDEC_ID_WINBOND_W25Q16:
-    case JEDEC_ID_MICRON_M25P16:
-    case JEDEC_ID_GIGA_GD25Q16E:
-        block_count = 32;     /* 2MiB */
-        break;
-
-    case JEDEC_ID_WINBOND_W25Q32:
-    case JEDEC_ID_WINBOND_W25X32:
-    case JEDEC_ID_MACRONIX_MX25L3206E:
-        block_count = 64;     /* 4MiB */
-        break;
-
-    case JEDEC_ID_MICRON_N25Q064:
-    case JEDEC_ID_WINBOND_W25Q64:
-    case JEDEC_ID_FMSH_FM25Q64:
-    case JEDEC_ID_MACRONIX_MX25L6406E:
-    case JEDEC_ID_CYPRESS_S25FL064L:
-        block_count = 128;    /* 8MiB */
-        break;
-
-    case JEDEC_ID_MICRON_N25Q128:
-    case JEDEC_ID_WINBOND_W25Q128:
-    case JEDEC_ID_WINBOND_W25Q128_2:
-    case JEDEC_ID_CYPRESS_S25FL128L:
-    case JEDEC_ID_ZBIT_ZB25VQ128:   
-    case JEDEC_ID_FMSH_FM25Q128A:
-    case JEDEC_ID_XTX_XT25F128F:
-        block_count = 256;    /* 16MiB */
-        break;
-
-    case JEDEC_ID_WINBOND_W25Q256:
-    case JEDEC_ID_MACRONIX_MX25L25635E:
-    case JEDEC_ID_FMSH_FM25Q256:
-        block_count = 512;    /* 32MiB */
-        use_32bit_address = true;
-        break;
-#endif
-    default:
-        block_count = 0;
-        hal.scheduler->delay(2000);
-        printf("Unknown SPI Flash 0x%08x\n", id);
-        return 0;
-    }
-
-    fs_cfg.read_size = page_size;
-    fs_cfg.prog_size = page_size; // we assume this is equal to read_size!
-    fs_cfg.block_size = block_size;
-    fs_cfg.block_count = block_count;
-
-    // larger metadata blocks mean less frequent compaction operations, but each
-    // takes longer. however, the total time spent compacting for a given file
-    // size still goes down with larger metadata blocks. 4096 was chosen to
-    // minimize both frequency and log buffer utilization.
-    fs_cfg.metadata_max = 4096;
-    fs_cfg.compact_thresh = 4096*0.88f;
-#if AP_FILESYSTEM_LITTLEFS_FLASH_TYPE == AP_FILESYSTEM_FLASH_W25NXX
-    fs_cfg.metadata_max = page_size * 2;
-    fs_cfg.compact_thresh = fs_cfg.metadata_max * 0.88f;
-#endif
 #else
     // SITL config
     fs_cfg.read_size = 2048;
@@ -838,7 +853,6 @@ uint32_t AP_Filesystem_FlashMemory_LittleFS::find_block_size_and_count() {
     fs_cfg.metadata_max = 2048;
 
     char lfsname[L_tmpnam];
-    uint32_t id = 0;
     if (std::tmpnam(lfsname)) {
         lfs_filebd_create(&fs_cfg, lfsname, &fbd_config);
         id = 0xFAFF;
@@ -877,11 +891,24 @@ bool AP_Filesystem_FlashMemory_LittleFS::mount_filesystem() {
     dev = hal.spi->get_device("dataflash");
 
     if (!dev) {
+ #if HAL_USE_WSPI == TRUE && defined(HAL_WSPI_DEVICE_LIST)
+        use_wspi_flash = true;
+        if (!wspi_dev.init()) {
+            last_error = wspi_dev.get_last_error();
+            if (last_error == nullptr) {
+                last_error = "WSPI init failed";
+            }
+            mark_dead();
+            return false;
+        }
+ #else
+        last_error = "no flash device";
         mark_dead();
         return false;
+ #endif
+    } else {
+        dev_sem = dev->get_semaphore();
     }
-
-    dev_sem = dev->get_semaphore();
 #else
     fs_cfg.read = lfs_filebd_read;
     fs_cfg.prog = lfs_filebd_prog;
@@ -892,20 +919,23 @@ bool AP_Filesystem_FlashMemory_LittleFS::mount_filesystem() {
     uint32_t id = find_block_size_and_count();
 
     if (!id) {
+        last_error = "geometry detect failed";
         mark_dead();
         return false;
     }
 #if CONFIG_HAL_BOARD != HAL_BOARD_SITL
     if (!init_flash()) {
+        last_error = "flash init failed";
         mark_dead();
         return false;
     }
 #endif
     if (lfs_mount(&fs, &fs_cfg) < 0) {
         /* maybe not formatted? try formatting it */
-        GCS_SEND_TEXT(MAV_SEVERITY_NOTICE, "Formatting flash");
+        last_error = "mount failed";
 
         if (lfs_format(&fs, &fs_cfg) < 0) {
+            last_error = "format failed";
             mark_dead();
             return false;
         }
@@ -913,6 +943,7 @@ bool AP_Filesystem_FlashMemory_LittleFS::mount_filesystem() {
         /* try mounting again */
         if (lfs_mount(&fs, &fs_cfg) < 0) {
             /* cannot mount after formatting */
+            last_error = "remount failed";
             mark_dead();
             return false;
         }
@@ -926,7 +957,7 @@ bool AP_Filesystem_FlashMemory_LittleFS::mount_filesystem() {
 
     // Force garbage collection to avoid expensive operations after boot
     lfs_fs_gc(&fs);
-    GCS_SEND_TEXT(MAV_SEVERITY_NOTICE, "Mounted flash 0x%x as littlefs", unsigned(id));
+    last_error = nullptr;
     mounted = true;
     return true;
 }
@@ -954,7 +985,6 @@ void AP_Filesystem_FlashMemory_LittleFS::format_handler(void)
     }
     WITH_SEMAPHORE(fs_sem);
     format_status = FormatStatus::IN_PROGRESS;
-    GCS_SEND_TEXT(MAV_SEVERITY_NOTICE, "Formatting flash using littlefs");
 
     int ret = lfs_format(&fs, &fs_cfg);
 
@@ -971,11 +1001,9 @@ void AP_Filesystem_FlashMemory_LittleFS::format_handler(void)
 
     if (ret == LFS_ERR_OK) {
         format_status = FormatStatus::SUCCESS;
-        GCS_SEND_TEXT(MAV_SEVERITY_NOTICE, "Format flash: OK");
     } else {
         format_status = FormatStatus::FAILURE;
         mark_dead();
-        GCS_SEND_TEXT(MAV_SEVERITY_NOTICE, "Format flash: Failed (%d)", int(ret));
     }
 }
 
@@ -1000,6 +1028,10 @@ bool AP_Filesystem_FlashMemory_LittleFS::write_enable()
 
 bool AP_Filesystem_FlashMemory_LittleFS::init_flash()
 {
+    if (use_wspi_flash) {
+        return true;
+    }
+
     if (!wait_until_device_is_ready()) {
         return false;
     }
@@ -1047,6 +1079,10 @@ int AP_Filesystem_FlashMemory_LittleFS::_flashmem_read(
     uint32_t num_pages = size / page_size;
     uint32_t address = (block * fs_cfg.block_size) + off;
     uint8_t* p = static_cast<uint8_t*>(buffer);
+
+    if (use_wspi_flash) {
+        return wspi_dev.read(address, p, size) ? LFS_ERR_OK : LFS_ERR_IO;
+    }
 
     while (num_pages--) {
 #ifdef AP_LFS_DEBUG
@@ -1097,6 +1133,23 @@ int AP_Filesystem_FlashMemory_LittleFS::_flashmem_prog(
     uint32_t address = (block * fs_cfg.block_size) + off;
     const uint8_t* p = static_cast<const uint8_t*>(buffer);
 
+    if (use_wspi_flash) {
+        while (num_pages--) {
+            uint32_t programming = 0;
+            uint32_t delay_us = 0;
+            uint32_t timeout_us = 0;
+            if (!wspi_dev.start_program_offset(address, p, page_size, programming, delay_us, timeout_us) ||
+                programming != page_size ||
+                !wait_until_device_is_ready()) {
+                return LFS_ERR_IO;
+            }
+
+            address += page_size;
+            p += page_size;
+        }
+        return LFS_ERR_OK;
+    }
+
     while (num_pages--) {
         if (!write_enable()) {
             return LFS_ERR_IO;
@@ -1139,6 +1192,19 @@ int AP_Filesystem_FlashMemory_LittleFS::_flashmem_prog(
 }
 
 int AP_Filesystem_FlashMemory_LittleFS::_flashmem_erase(lfs_block_t block) {
+    if (use_wspi_flash) {
+        uint32_t erasing = 0;
+        uint32_t delay_ms = 0;
+        uint32_t timeout_ms = 0;
+        if (!wspi_dev.start_erase_offset(block * fs_cfg.block_size, fs_cfg.block_size, erasing, delay_ms, timeout_ms) ||
+            erasing != fs_cfg.block_size) {
+            return LFS_ERR_IO;
+        }
+
+        hal.scheduler->delay(4);
+        return LFS_ERR_OK;
+    }
+
     if (!write_enable()) {
         return LFS_ERR_IO;
     }

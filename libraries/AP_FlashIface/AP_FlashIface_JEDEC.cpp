@@ -23,8 +23,10 @@
 */
 
 #include <AP_HAL/AP_HAL.h>
+#include <AP_HAL/Semaphores.h>
 #include "AP_FlashIface_JEDEC.h"
 #include <AP_Math/AP_Math.h>
+#include <cstring>
 #ifdef HAL_BOOTLOADER_BUILD
 #include <AP_HAL_ChibiOS/WSPIDevice.h>
 #include "../../Tools/AP_Bootloader/support.h"
@@ -119,8 +121,21 @@ static const struct supported_device supported_devices[] = {
 static ChibiOS::WSPIDeviceManager wspi;
 #endif
 
+void AP_FlashIface_JEDEC::set_last_error(const char *msg)
+{
+    if (msg == nullptr) {
+        last_error[0] = '\0';
+        return;
+    }
+
+    strncpy(last_error, msg, sizeof(last_error) - 1);
+    last_error[sizeof(last_error) - 1] = '\0';
+}
+
 bool AP_FlashIface_JEDEC::init()
 {
+    set_last_error(nullptr);
+
     // Get device bus by name
     _dev = nullptr;
     for (uint8_t i = 0; i < ARRAY_SIZE(supported_devices); i++) {
@@ -139,6 +154,10 @@ bool AP_FlashIface_JEDEC::init()
         AP_HAL::panic("Ext Flash Not Found!");
     }
 
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     DELAY_MILLIS(5); // required by w25q
     // Reset Device involves trying to soft reset the chip
     // as when system reboots the device might not have.
@@ -149,6 +168,9 @@ bool AP_FlashIface_JEDEC::init()
     // Detecting Device involves trying to read Device ID and matching
     // with what we expect. Along with extracting info from SFDP
     if (!detect_device()) {
+        if (get_last_error() == nullptr) {
+            set_last_error("detect failed");
+        }
         Msg_Print("Failed to detect flash device: %s", supported_devices[_dev_list_idx].name);
         return false;
     }
@@ -156,8 +178,11 @@ bool AP_FlashIface_JEDEC::init()
     // Configuring Device involved setting chip to correct WSPI mode
     // i.e. 1-4-4
     if (!configure_device()) {
-         Msg_Print("Failed to config flash device: %s", supported_devices[_dev_list_idx].name);
-         return false;
+        if (get_last_error() == nullptr) {
+            set_last_error("config failed");
+        }
+        Msg_Print("Failed to config flash device: %s", supported_devices[_dev_list_idx].name);
+        return false;
     }
 
     Msg_Print("Detected Flash Device: %s", supported_devices[_dev_list_idx].name);
@@ -171,11 +196,12 @@ bool AP_FlashIface_JEDEC::init()
 // reset chip to known default power on state
 void AP_FlashIface_JEDEC::reset_device()
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     // Get chip out of XIP mode
     AP_HAL::WSPIDevice::CommandHeader cmd;
-#ifndef HAL_BOOTLOADER_BUILD // this is required in order to run jedec_test with a regular bootloader
-    _dev->get_semaphore()->take_blocking();
-#endif
 
     /* Single line CMD_RESET_MEMORY command.*/
     cmd.cmd    =  CMD_RESET_ENABLE;
@@ -202,6 +228,10 @@ void AP_FlashIface_JEDEC::reset_device()
 // Does initial configuration to bring up and setup chip
 bool AP_FlashIface_JEDEC::detect_device()
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     AP_HAL::WSPIDevice::CommandHeader cmd;
 
     {
@@ -215,12 +245,14 @@ bool AP_FlashIface_JEDEC::detect_device()
 
         _dev->set_cmd_header(cmd);
         if (!_dev->transfer(nullptr, 0, buf, sizeof(buf))) {
+            set_last_error("read-id xfer failed");
             Debug("Failed to read Device ID");
             return false;
         }
 
         if (buf[0] != supported_devices[_dev_list_idx].manufacturer_id ||
             buf[1] != supported_devices[_dev_list_idx].device_id) {
+            set_last_error("bad JEDEC ID");
             return false;
         }
     }
@@ -239,24 +271,28 @@ bool AP_FlashIface_JEDEC::detect_device()
         cmd.dummy  =  8; // 8 dummy cycles
         _dev->set_cmd_header(cmd);
         if (!_dev->transfer(nullptr, 0, (uint8_t*)sfdp_header, sizeof(sfdp_header))) {
+            set_last_error("SFDP hdr read failed");
             Debug("SFDP Header read failed");
             return false;
         }
 
         // Read Signature
         if (memcmp(sfdp_header, "SFDP", 4)) {
+            set_last_error("bad SFDP signature");
             Debug("SFDP Bad Signature: 0x%lx", (unsigned long)sfdp_header[0]);
             return false;
         }
 
         // Read Num Param Headers
         if (SFDP_HDR_NUM_PARAMS(sfdp_header) == 0) {
+            set_last_error("unsupported SFDP headers");
             Debug("Unsupported number of param headers %ld", (unsigned long)SFDP_HDR_NUM_PARAMS(sfdp_header));
             return false;
         }
         // Read Revision
         _desc.param_rev = SFDP_HDR_PARAM_REV(sfdp_header);
         if (_desc.param_rev != SFDP_REV_1_6 && _desc.param_rev != SFDP_REV_1_5) {
+            set_last_error("unsupported SFDP revision");
             Debug("Unsupported revision %x", (unsigned int)_desc.param_rev);
             return false;
         }
@@ -270,11 +306,13 @@ bool AP_FlashIface_JEDEC::detect_device()
         cmd.addr = 2*sizeof(uint32_t);
         _dev->set_cmd_header(cmd);
         if (!_dev->transfer(nullptr, 0, (uint8_t*)param_header, sizeof(param_header))) {
+            set_last_error("param hdr read failed");
             Debug("Param header read failed");
             return false;
         }
 
         if (SFDP_PARAM_ID(param_header) != 0xFF) {
+            set_last_error("unsupported param table");
             Debug("Only basic Param Table supported not %lx", (unsigned long)SFDP_PARAM_ID(param_header));
             return false;
         }
@@ -289,12 +327,14 @@ bool AP_FlashIface_JEDEC::detect_device()
         cmd.addr = _desc.param_table_pointer;
         _dev->set_cmd_header(cmd);
         if (!_dev->transfer(nullptr, 0, (uint8_t*)param_table, _desc.param_table_len*sizeof(uint32_t))) {
+            set_last_error("param table read failed");
             Debug("Failed to read Parameter Table");
             return false;
         }
 
         // Flash Memory details Ref. JESD216D 6.4.5 6.4.14
         if (SFDP_GET_BIT(param_table[1], 31)) {
+            set_last_error("unsupported flash size");
             Debug("Unsupported Flash Size");
             return false;
         }
@@ -307,6 +347,7 @@ bool AP_FlashIface_JEDEC::detect_device()
         _desc.page_size = 1UL<<SFDP_GET_BITS(param_table[10], 4, 7);
         _desc.page_count = _desc.flash_size/_desc.page_size;
         if (_desc.page_count == 0) {
+            set_last_error("page size > flash size");
             Debug("Page size greater than flash size unsupported");
             return false;
         }
@@ -372,6 +413,7 @@ bool AP_FlashIface_JEDEC::detect_device()
         } else if (SFDP_GET_BIT(param_table[15], 2)) {
             _desc.write_enable_ins = 0x50;
         } else if (SFDP_GET_BITS(param_table[15], 3, 6)) {
+            set_last_error("unsupported WREN config");
             Debug("Unsupported Register Write Enable Config");
             return false;
         }
@@ -406,6 +448,7 @@ bool AP_FlashIface_JEDEC::detect_device()
 
         // Configure Octo/Quad Mode Enable and Read Sequence, Ref. JESD216D 6.4.8 6.4.10 6.4.18, 6.4.20
         if (!octo_spi && !SFDP_GET_BIT(param_table[0], 21)) {
+            set_last_error("1-4-4 unsupported");
             Debug("1-4-4 mode unsupported");
             return false;
         }
@@ -416,6 +459,7 @@ bool AP_FlashIface_JEDEC::detect_device()
         _desc.fast_read_dummy_cycles = SFDP_GET_BITS(param_table[fast_read_dword], 0, 4);
 
         if (_desc.fast_read_ins == 0) {
+            set_last_error("fast read unsupported");
             Debug("Fast read unsupported");
             return false;
         }
@@ -423,10 +467,12 @@ bool AP_FlashIface_JEDEC::detect_device()
         if (!octo_spi) {
             _desc.wide_mode_enable = SFDP_GET_BITS(param_table[14], 20, 22);
             if (_desc.wide_mode_enable != 0b000 && _desc.wide_mode_enable != QUAD_ENABLE_B1R2) {
+                set_last_error("unsupported QE requirement");
                 Debug("Unsupported Quad Enable Requirement 0x%x", _desc.wide_mode_enable);
                 return false;
             }
             if (SFDP_GET_BIT(param_table[14], 4) && _desc.wide_mode_enable != QUAD_ENABLE_B1R2) {
+                set_last_error("unsupported QE sequence");
                 Debug("Unsupported Quad Enable Requirement: set QE bits");
                 return false;
             }
@@ -435,10 +481,12 @@ bool AP_FlashIface_JEDEC::detect_device()
         else {
             _desc.wide_mode_enable = SFDP_GET_BITS(param_table[18], 20, 22);
             if (_desc.wide_mode_enable != 0b000 && _desc.wide_mode_enable != OCTO_ENABLE_B3R2) {
+                set_last_error("unsupported OE requirement");
                 Debug("Unsupported Octo Enable Requirement 0x%x", _desc.wide_mode_enable);
                 return false;
             }
             if (SFDP_GET_BIT(param_table[18], 5) && _desc.wide_mode_enable != OCTO_ENABLE_B3R2) {
+                set_last_error("unsupported OE sequence");
                 Debug("Unsupported Quad Enable Requirement: set WREN bits");
                 return false;
             }
@@ -483,14 +531,20 @@ bool AP_FlashIface_JEDEC::detect_device()
 // Configures device to normal working state, currently 1-4-4 WSPI
 bool AP_FlashIface_JEDEC::configure_device()
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     // Enable 1-4-4 mode
     if (_desc.wide_mode_enable == QUAD_ENABLE_B1R2) {
         uint8_t reg1 = 0, reg2 = 0;
         if (!read_reg(CMD_READ_STATUS_1, reg1)) {
+            set_last_error("reg1 read failed");
             Debug("Failed reg1 read");
             return false;
         }
         if (!read_reg(CMD_READ_STATUS_2, reg2)) {
+            set_last_error("reg2 read failed");
             Debug("Failed reg2 read");
             return false;
         }
@@ -511,6 +565,7 @@ bool AP_FlashIface_JEDEC::configure_device()
         _dev->set_cmd_header(cmd);
 
         if (!_dev->transfer(write_val, 2, nullptr, 0)) {
+            set_last_error("QE write failed");
             Debug("Failed QE write");
             write_disable();
             return false;
@@ -519,6 +574,7 @@ bool AP_FlashIface_JEDEC::configure_device()
         write_disable();
 
         if (!read_reg(0x35, reg2) || (reg2 & 0x2) == 0) {
+            set_last_error("QE verify failed");
             Debug("Failed to set QE bit");
             return false;
         }
@@ -547,6 +603,7 @@ bool AP_FlashIface_JEDEC::configure_device()
 
         _dev->set_cmd_header(read_reg);
         if (!_dev->transfer(nullptr, 0, &reg2, sizeof(reg2))) {
+            set_last_error("octo reg2 read failed");
             Debug("Failed reg2 read");
             return false;
         }
@@ -557,6 +614,7 @@ bool AP_FlashIface_JEDEC::configure_device()
         reg2 |= 0x4;    // enable OE bit
 
         if (!write_reg(0x31, reg2)) {
+            set_last_error("OE write failed");
             Debug("Failed OE write");
             write_disable();
             return false;
@@ -566,6 +624,7 @@ bool AP_FlashIface_JEDEC::configure_device()
 
         _dev->set_cmd_header(read_reg);
         if (!_dev->transfer(nullptr, 0, &reg2, sizeof(reg2)) || (reg2 & 0x4) == 0) {
+            set_last_error("OE verify failed");
             Debug("Failed to set OE bit");
             return false;
         }
@@ -624,6 +683,10 @@ bool AP_FlashIface_JEDEC::modify_reg(uint8_t read_ins, uint8_t write_ins,
 // reads a register value of chip using instruction
 bool AP_FlashIface_JEDEC::read_reg(uint8_t read_ins, uint8_t &read_val)
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     AP_HAL::WSPIDevice::CommandHeader cmd;
     cmd.cmd = read_ins;
     cmd.cfg    =  AP_HAL::WSPI::CFG_CMD_MODE_ONE_LINE |
@@ -642,6 +705,10 @@ bool AP_FlashIface_JEDEC::read_reg(uint8_t read_ins, uint8_t &read_val)
 // sends instruction to write a register value in the chip
 bool AP_FlashIface_JEDEC::write_reg(uint8_t write_ins, uint8_t write_val)
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     AP_HAL::WSPIDevice::CommandHeader cmd;
     cmd.cmd = write_ins;
     cmd.cfg    =  AP_HAL::WSPI::CFG_CMD_MODE_ONE_LINE |
@@ -660,6 +727,10 @@ bool AP_FlashIface_JEDEC::write_reg(uint8_t write_ins, uint8_t write_val)
 // Sends WSPI command without data
 bool AP_FlashIface_JEDEC::send_cmd(uint8_t ins)
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     AP_HAL::WSPIDevice::CommandHeader cmd;
     cmd.cmd = ins;
     cmd.cfg    =  AP_HAL::WSPI::CFG_CMD_MODE_ONE_LINE;
@@ -690,6 +761,10 @@ bool AP_FlashIface_JEDEC::send_cmd(uint8_t ins)
  */
 bool AP_FlashIface_JEDEC::start_mass_erase(uint32_t &delay_ms, uint32_t &timeout_ms)
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     write_enable();
     wait_ready();
 
@@ -758,6 +833,10 @@ bool AP_FlashIface_JEDEC::start_sector_erase(uint32_t sector, uint32_t &delay_ms
 bool AP_FlashIface_JEDEC::start_erase_offset(uint32_t offset, uint32_t size, uint32_t &erasing,
         uint32_t &delay_ms, uint32_t &timeout_ms)
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     uint8_t ins = 0;
     uint32_t erase_size = 0;
     erasing = 0;
@@ -886,6 +965,10 @@ bool AP_FlashIface_JEDEC::start_program_page(uint32_t page, const uint8_t* data,
 bool AP_FlashIface_JEDEC::start_program_offset(uint32_t offset, const uint8_t* data, uint32_t size, uint32_t &programming,
         uint32_t &delay_us, uint32_t &timeout_us)
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     if (size > _desc.page_size) {
         // we can only program single
         // page at the max in one go
@@ -933,6 +1016,10 @@ bool AP_FlashIface_JEDEC::start_program_offset(uint32_t offset, const uint8_t* d
  */
 bool AP_FlashIface_JEDEC::read(uint32_t offset, uint8_t* data, uint32_t size)
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     if ((offset + size) > _desc.flash_size) {
         // reading more than what exists
         return false;
@@ -987,6 +1074,10 @@ bool AP_FlashIface_JEDEC::read(uint32_t offset, uint8_t* data, uint32_t size)
  */
 bool AP_FlashIface_JEDEC::is_device_busy()
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     // wait for peripheral to become free
     while (_dev->is_busy()) {}
 
@@ -1018,6 +1109,10 @@ void AP_FlashIface_JEDEC::wait_ready()
  */
 bool AP_FlashIface_JEDEC::start_xip_mode(void** addr)
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     wait_ready();
 
     if (!_desc.is_xip_supported) {
@@ -1104,5 +1199,9 @@ bool AP_FlashIface_JEDEC::start_xip_mode(void** addr)
 
 bool AP_FlashIface_JEDEC::stop_xip_mode()
 {
+#ifndef HAL_BOOTLOADER_BUILD
+    WITH_SEMAPHORE(_dev->get_semaphore());
+#endif
+
     return _dev->exit_xip_mode();
 }

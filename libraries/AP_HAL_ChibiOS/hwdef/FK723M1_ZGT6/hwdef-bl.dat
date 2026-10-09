@@ -1,0 +1,36 @@
+# hw definition file for processing by chibios_hwdef.py
+# for FK723M1_ZGT6 bootloader
+
+MCU STM32H7xx STM32H723xx
+
+# Temporary local-only board ID for bring-up.
+APJ_BOARD_ID 9999
+
+OSCILLATOR_HZ 25000000
+FLASH_SIZE_KB 1024
+
+# Bootloader lives at start of flash.
+FLASH_RESERVE_START_KB 0
+FLASH_BOOTLOADER_LOAD_KB 128
+
+SERIAL_ORDER OTG1 USART1
+
+USB_STRING_MANUFACTURER "IMPACTOR"
+USB_STRING_PRODUCT "FK723M1_ZGT6-BL"
+
+# USB
+PA11 OTG_HS_DM OTG1
+PA12 OTG_HS_DP OTG1
+
+# USART1 - optional wired bootloader console / upload path
+PA9  USART1_TX USART1 NODMA
+PA10 USART1_RX USART1 NODMA
+
+# SWD
+PA13 JTMS-SWDIO SWD
+PA14 JTCK-SWCLK SWD
+
+# Keep CS deasserted during bootloader
+PB12 ICM20602_CS CS
+
+# LED and extra peripherals intentionally omitted from the first bootloader pass.

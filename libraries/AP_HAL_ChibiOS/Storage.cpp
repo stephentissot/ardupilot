@@ -52,6 +52,8 @@ extern const AP_HAL::HAL& hal;
 #define HAL_RAMTRON_ALLOW_FALLBACK 0
 #endif
 
+static uint32_t storage_last_io_error_ms;
+
 void Storage::_storage_open(void)
 {
     if (_initialisedType != StorageBackend::None) {
@@ -87,7 +89,8 @@ void Storage::_storage_open(void)
         }
 
         // use microSD based storage
-        if (AP::FS().retry_mount()) {
+        if (!AP::FS().retry_mount()) {
+        } else {
             log_fd = AP::FS().open(HAL_STORAGE_FILE, O_RDWR|O_CREAT);
             if (log_fd == -1) {
                 ::printf("open failed of " HAL_STORAGE_FILE "\n");
@@ -116,7 +119,11 @@ void Storage::_storage_open(void)
     if (_initialisedType != StorageBackend::None) {
         ::printf("Initialised Storage type=%d\n", _initialisedType);
     } else {
+#ifdef USE_POSIX
+        ::printf("Storage backend unavailable, continuing without persistent storage\n");
+#else
         AP_HAL::panic("Unable to init Storage backend");
+#endif
     }
 }
 
@@ -287,12 +294,15 @@ void Storage::_timer_tick(void)
     if ((_initialisedType == StorageBackend::SDCard) && log_fd != -1) {
         uint32_t offset = CH_STORAGE_LINE_SIZE*i;
         if (AP::FS().lseek(log_fd, offset, SEEK_SET) != offset) {
+            storage_last_io_error_ms = AP_HAL::millis();
             return;
         }
         if (AP::FS().write(log_fd, &_buffer[offset], CH_STORAGE_LINE_SIZE) != CH_STORAGE_LINE_SIZE) {
+            storage_last_io_error_ms = AP_HAL::millis();
             return;
         }
         if (AP::FS().fsync(log_fd) != 0) {
+            storage_last_io_error_ms = AP_HAL::millis();
             return;
         }
         write_ok = true;

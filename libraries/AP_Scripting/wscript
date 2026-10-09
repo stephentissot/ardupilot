@@ -13,6 +13,9 @@ BINDING_CFLAGS="-std=c99 -Wno-error=missing-field-initializers -Wall -Werror -We
 BINDING_CC="gcc"
 
 def configure(cfg):
+    if cfg.options.disable_scripting and not cfg.options.scripting_docs:
+        return
+
     cfg.env.AP_LIB_EXTRA_SOURCES['AP_Scripting'] = ['lua_generated_bindings.cpp']
 
 def relpath(bld, node):
@@ -21,6 +24,9 @@ def relpath(bld, node):
     return os.path.relpath(node.abspath(), blddir)
 
 def build(bld):
+    if bld.options.disable_scripting and not bld.options.scripting_docs:
+        return
+
     main_c = bld.srcnode.make_node('libraries/AP_Scripting/generator/src/main.c')
     gen_bindings = bld.bldnode.find_or_declare('gen-bindings')
 

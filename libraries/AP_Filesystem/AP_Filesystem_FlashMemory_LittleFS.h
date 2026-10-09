@@ -20,6 +20,7 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include <AP_HAL/Semaphores.h>
+#include <AP_FlashIface/AP_FlashIface_JEDEC.h>
 #include "lfs.h"
 
 class AP_Filesystem_FlashMemory_LittleFS : public AP_Filesystem_Backend
@@ -78,6 +79,8 @@ private:
 
     // Stores whether the filesystem has been marked as dead
     bool dead;
+    const char *last_error = nullptr;
+    uint32_t last_error_report_ms = 0;
 
     // Array of currently open file descriptors
     struct FileDescriptor {
@@ -92,9 +95,11 @@ private:
 
     // SPI device that handles the raw flash memory
     AP_HAL::OwnPtr<AP_HAL::SPIDevice> dev;
+    AP_FlashIface_JEDEC wspi_dev;
 
     // Semaphore to protect access to the SPI device
     AP_HAL::Semaphore *dev_sem;
+    bool use_wspi_flash = false;
 
     // Flag to denote that the underlying flash chip uses 32-bit addresses
     bool use_32bit_address;

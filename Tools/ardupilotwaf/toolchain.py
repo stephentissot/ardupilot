@@ -163,6 +163,12 @@ def configure(cfg):
         cfg.find_program('%s-ar' % cfg.env.TOOLCHAIN, var='AR', quiet=True)
     cfg.load('compiler_cxx compiler_c gccdeps')
 
+    # Waf's generic win32 gcc logic injects a PE/COFF linker flag that the
+    # bare-metal arm-none-eabi linker does not understand.
+    cfg.env.LINKFLAGS = [f for f in cfg.env.LINKFLAGS if f != '-Wl,--enable-auto-import']
+    cfg.env.LINKFLAGS_cprogram = [f for f in cfg.env.LINKFLAGS_cprogram if f != '-Wl,--enable-auto-import']
+    cfg.env.LINKFLAGS_cxxprogram = [f for f in cfg.env.LINKFLAGS_cxxprogram if f != '-Wl,--enable-auto-import']
+
     if sys.platform.startswith("cygwin"):
         cfg.find_program('nm', var='NM')
     else:

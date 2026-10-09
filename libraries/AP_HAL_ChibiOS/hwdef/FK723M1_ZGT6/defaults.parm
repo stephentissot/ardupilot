@@ -1,0 +1,14 @@
+# Minimal defaults for early wiring validation.
+# Keep this file conservative until the board port is stable.
+
+SERIAL1_PROTOCOL,2
+SERIAL1_BAUD,115
+SERIAL2_PROTOCOL,5
+SERIAL2_BAUD,115
+SERIAL3_PROTOCOL,23
+SERIAL3_BAUD,420
+FRAME_CLASS,1
+FRAME_TYPE,1
+
+# Do not require a compass in the very first bring-up loop.
+COMPASS_USE,0
