@@ -10,5 +10,17 @@ SERIAL3_BAUD,420
 FRAME_CLASS,1
 FRAME_TYPE,1
 
+# Enable OpenDroneID params by default so ESP32 ODID bring-up can proceed.
+DID_ENABLE,1
+# ESP32 Remote ID link is on USART3, which maps to SERIAL4 with this board's SERIAL_ORDER.
+DID_MAVPORT,4
+
+# VL53L0X rangefinder on I2C2, address 0x29 (41 decimal).
+RNGFND1_TYPE,16
+RNGFND1_ADDR,41
+RNGFND1_ORIENT,25
+RNGFND1_MIN,0
+RNGFND1_MAX,4
+
 # Do not require a compass in the very first bring-up loop.
 COMPASS_USE,0

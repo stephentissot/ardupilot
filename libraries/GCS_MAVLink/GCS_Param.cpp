@@ -27,9 +27,40 @@
 
 extern const AP_HAL::HAL& hal;
 
+namespace {
+
+// Count only parameters that are actually emitted by next_scalar(),
+// so GCS param_count matches what can really be downloaded.
+uint16_t count_streamable_scalar_parameters()
+{
+    AP_Param::ParamToken token{};
+    ap_var_type ptype;
+    AP_Param *param = AP_Param::first(&token, &ptype);
+    uint16_t count = 0;
+    while (param != nullptr) {
+        count++;
+        param = AP_Param::next_scalar(&token, &ptype);
+    }
+    return count;
+}
+
+// Keep PARAM_VALUE.param_count stable across mixed sync/async parameter
+// traffic so GCS never observes inconsistent totals within a session.
+uint16_t advertised_param_count;
+
+uint16_t current_advertised_param_count()
+{
+    if (advertised_param_count == 0) {
+        advertised_param_count = count_streamable_scalar_parameters();
+    }
+    return advertised_param_count;
+}
+
+}
+
 // queue of pending parameter requests and replies
-ObjectBuffer<GCS_MAVLINK::pending_param_request> GCS_MAVLINK::param_requests(20);
-ObjectBuffer<GCS_MAVLINK::pending_param_reply> GCS_MAVLINK::param_replies(5);
+ObjectBuffer<GCS_MAVLINK::pending_param_request> GCS_MAVLINK::param_requests(64);
+ObjectBuffer<GCS_MAVLINK::pending_param_reply> GCS_MAVLINK::param_replies(16);
 
 bool GCS_MAVLINK::param_timer_registered;
 
@@ -218,7 +249,8 @@ void GCS_MAVLINK::handle_param_request_list(const mavlink_message_t &msg)
     // Start sending parameters - next call to ::update will kick the first one out
     _queued_parameter = AP_Param::first(&_queued_parameter_token, &_queued_parameter_type);
     _queued_parameter_index = 0;
-    _queued_parameter_count = AP_Param::count_parameters();
+    advertised_param_count = count_streamable_scalar_parameters();
+    _queued_parameter_count = advertised_param_count;
     _queued_parameter_send_time_ms = AP_HAL::millis(); // avoid initial flooding
 }
 
@@ -226,6 +258,13 @@ void GCS_MAVLINK::handle_param_request_read(const mavlink_message_t &msg)
 {
     if (param_requests.space() == 0) {
         // we can't process this right now, drop it
+        static uint32_t last_param_req_drop_warn_ms;
+        const uint32_t now = AP_HAL::millis();
+        if (now - last_param_req_drop_warn_ms > 5000U) {
+            last_param_req_drop_warn_ms = now;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                          "Param queue full: dropping PARAM_REQUEST_READ");
+        }
         return;
     }
     
@@ -339,7 +378,7 @@ void GCS_MAVLINK::send_parameter_value(const char *param_name, ap_var_type param
         param_name,
         param_value,
         mav_param_type(param_type),
-        AP_Param::count_parameters(),
+        current_advertised_param_count(),
         -1);
 }
 
@@ -353,7 +392,7 @@ void GCS::send_parameter_value(const char *param_name, ap_var_type param_type, f
     memcpy(packet.param_id, param_name, to_copy);
     packet.param_value = param_value;
     packet.param_type = GCS_MAVLINK::mav_param_type(param_type);
-    packet.param_count = AP_Param::count_parameters();
+    packet.param_count = current_advertised_param_count();
     packet.param_index = -1;
 
     gcs().send_to_active_channels(MAVLINK_MSG_ID_PARAM_VALUE,
@@ -392,6 +431,7 @@ void GCS_MAVLINK::param_io_timer(void)
 
     struct pending_param_reply reply;
     AP_Param *vp;
+    const uint16_t param_count = current_advertised_param_count();
 
     if (req.param_index != -1) {
         AP_Param::ParamToken token {};
@@ -418,7 +458,7 @@ void GCS_MAVLINK::param_io_timer(void)
         reply.param_error = MAV_PARAM_ERROR_DOES_NOT_EXIST;
     }
     reply.param_index = req.param_index;
-    reply.count = AP_Param::count_parameters();
+    reply.count = param_count;
 
     // queue for transmission
     param_replies.push(reply);

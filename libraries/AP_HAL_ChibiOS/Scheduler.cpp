@@ -838,7 +838,19 @@ void Scheduler::check_stack_free(void)
     const uint32_t min_stack = 64;
 #endif
 
-    if (stack_free(&__main_stack_base__) < min_stack) {
+    // One-shot diagnostics to identify which context crosses the low-stack threshold.
+    static bool isr_stack_low_reported;
+    static bool thread_stack_low_reported;
+
+    const uint32_t isr_free = stack_free(&__main_stack_base__);
+    if (isr_free < min_stack) {
+        if (!isr_stack_low_reported) {
+            isr_stack_low_reported = true;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                          "Stack low ISR free=%lu thr=%lu",
+                          (unsigned long)isr_free,
+                          (unsigned long)min_stack);
+        }
         // use "line number" of 0xFFFF for ISR stack low
 #if AP_INTERNALERROR_ENABLED
         AP::internalerror().error(AP_InternalError::error_t::stack_overflow, 0xFFFF);
@@ -846,7 +858,19 @@ void Scheduler::check_stack_free(void)
     }
 
     for (thread_t *tp = chRegFirstThread(); tp; tp = chRegNextThread(tp)) {
-        if (stack_free(tp->wabase) < min_stack) {
+        const uint32_t free_bytes = stack_free(tp->wabase);
+        if (free_bytes < min_stack) {
+            if (!thread_stack_low_reported) {
+                thread_stack_low_reported = true;
+                char thdname[17] {};
+                strncpy(thdname, tp->name, sizeof(thdname)-1);
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                              "Stack low thd=%s prio=%u free=%lu thr=%lu",
+                              thdname,
+                              unsigned(tp->realprio),
+                              (unsigned long)free_bytes,
+                              (unsigned long)min_stack);
+            }
             // use task priority for line number. This allows us to
             // identify the task fairly reliably
 #if AP_INTERNALERROR_ENABLED

@@ -30,6 +30,26 @@
 
 extern const AP_HAL::HAL& hal;
 
+namespace {
+
+// Keep MAVFTP parameter totals consistent with the exact scalar iterator
+// used to build param.pck payload records.
+uint16_t count_streamable_scalar_parameters()
+{
+    AP_Param::ParamToken token{};
+    ap_var_type ptype;
+    float default_val;
+    AP_Param *param = AP_Param::first(&token, &ptype, &default_val);
+    uint16_t count = 0;
+    while (param != nullptr) {
+        count++;
+        param = AP_Param::next_scalar(&token, &ptype, &default_val);
+    }
+    return count;
+}
+
+}
+
 // QURT HAL already has a declaration of errno in errno.h
 #if CONFIG_HAL_BOARD != HAL_BOARD_QURT
 extern int errno;
@@ -192,7 +212,7 @@ uint8_t AP_Filesystem_Param::pack_param(const struct rfile &r, struct cursor &c,
         ap = AP_Param::next_scalar(&c.token, &ptype, &default_val);
     }
     if (ap == nullptr || (r.count && c.idx >= r.count)) {
-        if (r.count == 0 && c.idx != AP_Param::count_parameters()) {
+        if (r.count == 0 && c.idx != count_streamable_scalar_parameters()) {
             // the parameter count is incorrect, invalidate so a
             // repeated param download avoids an error
             AP_Param::invalidate_count();
@@ -359,7 +379,7 @@ int32_t AP_Filesystem_Param::read(int fd, void *buf, uint32_t count)
 
     if (r.file_ofs < sizeof(struct header)) {
         struct header hdr;
-        hdr.total_params = AP_Param::count_parameters();
+        hdr.total_params = count_streamable_scalar_parameters();
         if (hdr.total_params <= r.start) {
             errno = EINVAL;
             return -1;
@@ -479,7 +499,7 @@ int AP_Filesystem_Param::stat(const char *name, struct stat *stbuf)
     }
     memset(stbuf, 0, sizeof(*stbuf));
     // give size estimation to avoid needing to scan entire file
-    stbuf->st_size = AP_Param::count_parameters() * 12;
+    stbuf->st_size = count_streamable_scalar_parameters() * 12;
     return 0;
 }
 

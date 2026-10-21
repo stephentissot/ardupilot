@@ -9,6 +9,10 @@ MCU STM32H7xx STM32H723xx
 # Temporary local-only board ID for bring-up.
 APJ_BOARD_ID 9999
 
+# Enable ArduPilot's OpenDroneID subsystem in this board build.
+define AP_OPENDRONEID_ENABLED 1
+define OPENDRONEID_ENABLE_DEFAULT 1
+
 # Bring-up now uses the board's real 25 MHz HSE with the local H723 type2
 # PLL branch kept in this repository.
 OSCILLATOR_HZ 25000000
@@ -18,6 +22,13 @@ FLASH_SIZE_KB 1024
 FLASH_RESERVE_START_KB 0
 define HAL_STORAGE_SIZE 32768
 define HAL_FORCE_CLOCK_INIT
+
+# Raise main and process stacks for early bring-up stability.
+MAIN_STACK 0x800
+PROCESS_STACK 0x2800
+
+# l:59 stack_ovrflw corresponds to APM_STORAGE_PRIORITY; enlarge storage thread stack.
+define STORAGE_THD_WA_SIZE 2048
 
 STM32_ST_USE_TIMER 12
 define CH_CFG_ST_RESOLUTION 16
@@ -30,7 +41,7 @@ USB_STRING_PRODUCT "FK723M1_ZGT6"
 # Disable bootloader embedding until the local bootloader build is in place.
 define AP_BOOTLOADER_FLASHING_ENABLED 0
 
-SERIAL_ORDER OTG1 USART1 UART4 USART2
+SERIAL_ORDER OTG1 USART1 UART4 USART2 USART3
 
 # USB
 PA11 OTG_HS_DM OTG1
@@ -50,7 +61,11 @@ PD0 UART4_RX UART4
 
 # USART2 - ELRS / CRSF
 PD5 USART2_TX USART2
-PD6 USART2_RX USART2
+PD6 USART2_RX USART2 HIGH PULLUP
+
+# USART3 - dedicated MAVLink output for VisionESP32 / bench telemetry
+PC10 USART3_TX USART3
+PC11 USART3_RX USART3
 
 # On direct-SWD app boot, OCTOSPI pin presence triggers HAL_XIP_ENABLED in hwdef generation.
 # Force the normal clock init path so external-flash wiring can coexist with internal-flash boot.
@@ -67,7 +82,7 @@ OSPIDEV w25q OCTOSPI1 MODE3 80*MHZ 23 1
 PB6 I2C1_SCL I2C1
 PB7 I2C1_SDA I2C1
 
-# I2C2 - auxiliary OLED display
+# I2C2 - auxiliary OLED display + VL53L0X rangefinder
 PF1 I2C2_SCL I2C2
 PF0 I2C2_SDA I2C2
 
@@ -122,5 +137,7 @@ define DEFAULT_SERIAL2_PROTOCOL SerialProtocol_GPS
 define DEFAULT_SERIAL2_BAUD 115
 define DEFAULT_SERIAL3_PROTOCOL SerialProtocol_RCIN
 define DEFAULT_SERIAL3_BAUD 420
+define DEFAULT_SERIAL4_PROTOCOL SerialProtocol_MAVLink2
+define DEFAULT_SERIAL4_BAUD 115
 
 # Do not enable battery-monitor defaults until analog wiring exists.

@@ -585,6 +585,12 @@ const AP_Param::Info Copter::var_info[] = {
     // @Path: ../libraries/AP_Vehicle/AP_Vehicle.cpp
     PARAM_VEHICLE_INFO,
 
+#if AP_OPENDRONEID_ENABLED
+    // @Group: DID_
+    // @Path: ../libraries/AP_OpenDroneID/AP_OpenDroneID.cpp
+    GOBJECTN(opendroneid, opendroneid, "DID_", AP_OpenDroneID),
+#endif
+
 #if HAL_GCS_ENABLED
     // @Group: MAV
     // @Path: ../libraries/GCS_MAVLink/GCS.cpp

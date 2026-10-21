@@ -91,6 +91,7 @@ public:
     void get_persistent_params(ExpandingString &str) const;
 
     void load_UAS_ID_from_persistent_memory();
+    bool generate_UAS_ID_from_hardware_uid();
 
     // get singleton instance
     static AP_OpenDroneID *get_singleton()
@@ -111,6 +112,7 @@ private:
     char id_type[3];
     size_t id_len;
     char id_str[21];
+    char hw_serial_seed_str[21];
     bool bootloader_flashed;
     enum Options : int16_t {
         EnforcePreArmChecks = (1U << 0U),
@@ -129,6 +131,7 @@ private:
     uint32_t _last_send_location_ms;
     uint32_t _last_send_system_update_ms;
     uint32_t _last_send_static_messages_ms;
+    uint32_t _last_chan_warn_ms;
     static constexpr uint32_t _mavlink_dynamic_period_ms = 1000; //how often are mavlink dynamic messages sent in ms. E.g. 1000 = 1 Hz
     static constexpr uint32_t _mavlink_static_period_ms = 3000; //how often are mavlink static messages sent in ms
 

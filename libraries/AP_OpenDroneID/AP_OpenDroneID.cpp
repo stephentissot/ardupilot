@@ -45,13 +45,30 @@
 
 extern const AP_HAL::HAL &hal;
 
+namespace {
+char odid_nibble_to_hex(uint8_t nibble)
+{
+    nibble &= 0x0F;
+    return nibble < 10 ? char('0' + nibble) : char('A' + (nibble - 10));
+}
+
+char odid_hex_length_digit(uint8_t length)
+{
+    return odid_nibble_to_hex(length);
+}
+}
+
+#ifndef OPENDRONEID_ENABLE_DEFAULT
+#define OPENDRONEID_ENABLE_DEFAULT 0
+#endif
+
 const AP_Param::GroupInfo AP_OpenDroneID::var_info[] = {
 
     // @Param: ENABLE
     // @DisplayName: Enable ODID subsystem
     // @Description: Enable ODID subsystem
     // @Values: 0:Disabled,1:Enabled
-    AP_GROUPINFO_FLAGS("ENABLE", 1, AP_OpenDroneID, _enable, 0, AP_PARAM_FLAG_ENABLE),
+    AP_GROUPINFO_FLAGS("ENABLE", 1, AP_OpenDroneID, _enable, OPENDRONEID_ENABLE_DEFAULT, AP_PARAM_FLAG_ENABLE),
 
     // @Param: MAVPORT
     // @DisplayName: MAVLink serial port
@@ -98,6 +115,9 @@ AP_OpenDroneID::AP_OpenDroneID()
 #endif
     _singleton = this;
     AP_Param::setup_object_defaults(this, var_info);
+#if OPENDRONEID_ENABLE_DEFAULT
+    _enable.set(OPENDRONEID_ENABLE_DEFAULT);
+#endif
 }
 
 void AP_OpenDroneID::init()
@@ -126,7 +146,50 @@ void AP_OpenDroneID::load_UAS_ID_from_persistent_memory()
         }
     } else {
         id_len = 0;
+        generate_UAS_ID_from_hardware_uid();
     }
+}
+
+bool AP_OpenDroneID::generate_UAS_ID_from_hardware_uid()
+{
+    uint8_t uid[12] = {};
+    uint8_t uid_len = sizeof(uid);
+    if (!hal.util->get_system_id_unformatted(uid, uid_len) || uid_len == 0) {
+        return false;
+    }
+
+    // Keep a raw, deterministic serial seed from the hardware UID for debug
+    // and for deriving a CTA-2063 compatible public UAS ID.
+    const uint8_t uid_bytes_to_encode = MIN<uint8_t>(uid_len, 10U);
+    for (uint8_t index = 0; index < uid_bytes_to_encode; index++) {
+        hw_serial_seed_str[index * 2U] = odid_nibble_to_hex(uid[index] >> 4U);
+        hw_serial_seed_str[index * 2U + 1U] = odid_nibble_to_hex(uid[index]);
+    }
+    hw_serial_seed_str[uid_bytes_to_encode * 2U] = '\0';
+
+    // ANSI/CTA-2063 serial number layout used by opendroneid-core-c tests:
+    // 4 chars manufacturer code, 1 char length, 15 chars serial payload.
+    static constexpr char kManufacturerCode[] = "BIGS";
+    static constexpr uint8_t kPublicSerialPayloadLen = 15U;
+    memcpy(id_str, kManufacturerCode, 4U);
+    id_str[4] = odid_hex_length_digit(kPublicSerialPayloadLen);
+    memset(&id_str[5], '0', kPublicSerialPayloadLen);
+    const size_t raw_seed_len = strnlen(hw_serial_seed_str, sizeof(hw_serial_seed_str));
+    const size_t raw_seed_copy_len = MIN<size_t>(raw_seed_len, kPublicSerialPayloadLen);
+    memcpy(&id_str[5], hw_serial_seed_str, raw_seed_copy_len);
+    id_str[20] = '\0';
+    id_len = strnlen(id_str, sizeof(id_str));
+
+    snprintf(id_type, sizeof(id_type), "%u", unsigned(MAV_ODID_ID_TYPE_SERIAL_NUMBER));
+#if defined(OPENDRONEID_UA_TYPE)
+    snprintf(ua_type, sizeof(ua_type), "%u", unsigned(OPENDRONEID_UA_TYPE));
+#else
+    snprintf(ua_type, sizeof(ua_type), "%u", unsigned(MAV_ODID_UA_TYPE_HELICOPTER_OR_MULTIROTOR));
+#endif
+
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OpenDroneID: HW serial seed: %s", hw_serial_seed_str);
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OpenDroneID: Generated CTA2063 UAS_ID: %s", id_str);
+    return true;
 }
 
 void AP_OpenDroneID::set_basic_id() {
@@ -212,6 +275,19 @@ void AP_OpenDroneID::update()
 {
     if (_enable == 0) {
         return;
+    }
+
+    // Refresh the MAVLink channel every cycle. init() can run before the
+    // channel bound to DID_MAVPORT is fully established.
+    _chan = mavlink_channel_t(gcs().get_channel_from_port_number(_mav_port));
+    if (_chan == MAV_CHAN_INVALID) {
+        const uint32_t now_ms = AP_HAL::millis();
+        if (now_ms - _last_chan_warn_ms > 5000U) {
+            _last_chan_warn_ms = now_ms;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                          "ODID: DID_MAVPORT=%d has no MAVLink channel",
+                          int(_mav_port.get()));
+        }
     }
 
     if ((pkt_basic_id.id_type == MAV_ODID_ID_TYPE_SERIAL_NUMBER)

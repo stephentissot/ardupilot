@@ -383,6 +383,7 @@ public:
         // 254,255: reserved
 
         k_param_vehicle = 257, // vehicle common block of parameters
+        k_param_opendroneid,
         k_param_throw_altitude_min,
         k_param_throw_altitude_max,
         k_param__gcs,

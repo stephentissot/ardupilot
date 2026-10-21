@@ -26,6 +26,7 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include <AP_HAL/utility/sparse-endian.h>
+#include <GCS_MAVLink/GCS.h>
 #include <stdio.h>
 
 extern const AP_HAL::HAL& hal;
@@ -238,7 +239,19 @@ AP_RangeFinder_Backend *AP_RangeFinder_VL53L0X::detect(RangeFinder::RangeFinder_
 
     sensor->dev->get_semaphore()->take_blocking();
     
-    if (!sensor->check_id() || !sensor->init()) {
+    if (!sensor->check_id()) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                      "VL53L0X: ID check failed on I2C%u addr 0x%02x",
+                      sensor->dev->bus_num(), sensor->dev->get_bus_address());
+        sensor->dev->get_semaphore()->give();
+        delete sensor;
+        return nullptr;
+    }
+
+    if (!sensor->init()) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                      "VL53L0X: init failed on I2C%u addr 0x%02x",
+                      sensor->dev->bus_num(), sensor->dev->get_bus_address());
         sensor->dev->get_semaphore()->give();
         delete sensor;
         return nullptr;
@@ -257,9 +270,15 @@ bool AP_RangeFinder_VL53L0X::check_id(void)
         !dev->read_registers(0xC1, &v2, 1) ||
         v1 != 0xEE ||
         v2 != 0xAA) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                      "VL53L0X: bad ID I2C%u addr 0x%02x (0x%02x 0x%02x)",
+                      dev->bus_num(), dev->get_bus_address(), v1, v2);
         return false;
     }
     printf("Detected VL53L0X on bus 0x%x\n", unsigned(dev->get_bus_id()));
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                  "VL53L0X: detected on I2C%u addr 0x%02x",
+                  dev->bus_num(), dev->get_bus_address());
     return true;
 }
 
@@ -670,6 +689,8 @@ bool AP_RangeFinder_VL53L0X::init()
 
     start_continuous();
 
+    // Keep bring-up chatter minimal to avoid competing with MAVLink param sync.
+
     // call timer() every 33ms. We expect new data to be available every 33ms
     dev->register_periodic_callback(33000,
                                     FUNCTOR_BIND_MEMBER(&AP_RangeFinder_VL53L0X::timer, void));
@@ -720,6 +741,13 @@ bool AP_RangeFinder_VL53L0X::get_reading(uint16_t &reading_mm)
 {
     if ((read_register(RESULT_INTERRUPT_STATUS) & 0x07) == 0) {
         if (AP_HAL::millis() - start_ms > 200) {
+            static uint32_t last_timeout_msg_ms;
+            const uint32_t now = AP_HAL::millis();
+            if (now - last_timeout_msg_ms > 30000U) {
+                last_timeout_msg_ms = now;
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                              "VL53L0X: no interrupt data, restarting continuous mode");
+            }
             start_continuous();
         }
         return false;
