@@ -43,6 +43,9 @@
 #include <stdio.h>
 #include <GCS_MAVLink/GCS.h>
 
+static constexpr uint16_t kMavCmdUser1 = 31000;
+static constexpr float kOdidTransportMagic = 4944.0F;
+
 extern const AP_HAL::HAL &hal;
 
 namespace {
@@ -95,6 +98,30 @@ const AP_Param::GroupInfo AP_OpenDroneID::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("BARO_ACC", 5, AP_OpenDroneID, _baro_accuracy, -1.0),
 
+    // @Param: MFRCODE
+    // @DisplayName: OpenDroneID manufacturer code preset
+    // @Description: 4-letter manufacturer code used in generated CTA-2063 UAS ID.
+    // @Values: 0:BIGS,1:BIGD,2:IMPA
+    AP_GROUPINFO("MFRCODE", 6, AP_OpenDroneID, _manufacturer_code, 0),
+
+    // @Param: TX_BLE
+    // @DisplayName: OpenDroneID BLE transport enable
+    // @Description: Enables BLE transport on external ODID broadcaster (ESP32 radioHub).
+    // @Values: 0:Disabled,1:Enabled
+    AP_GROUPINFO("TX_BLE", 7, AP_OpenDroneID, _tx_ble, 1),
+
+    // @Param: TX_NAN
+    // @DisplayName: OpenDroneID Wi-Fi NAN transport enable
+    // @Description: Enables Wi-Fi NAN transport on external ODID broadcaster (ESP32 radioHub).
+    // @Values: 0:Disabled,1:Enabled
+    AP_GROUPINFO("TX_NAN", 8, AP_OpenDroneID, _tx_nan, 1),
+
+    // @Param: TX_BCN
+    // @DisplayName: OpenDroneID Wi-Fi Beacon transport enable
+    // @Description: Enables Wi-Fi Beacon transport on external ODID broadcaster (ESP32 radioHub).
+    // @Values: 0:Disabled,1:Enabled
+    AP_GROUPINFO("TX_BCN", 9, AP_OpenDroneID, _tx_beacon, 0),
+
     AP_GROUPEND
 };
 
@@ -118,6 +145,23 @@ AP_OpenDroneID::AP_OpenDroneID()
 #if OPENDRONEID_ENABLE_DEFAULT
     _enable.set(OPENDRONEID_ENABLE_DEFAULT);
 #endif
+    _last_uas_id_announce_ms = 0;
+    _last_transport_cfg_send_ms = 0;
+    _last_transport_flags_sent = -1;
+    _uas_id_announce_count = 0;
+}
+
+const char *AP_OpenDroneID::selected_manufacturer_code() const
+{
+    switch (int8_t(_manufacturer_code.get())) {
+    case 1:
+        return "BIGD";
+    case 2:
+        return "IMPA";
+    case 0:
+    default:
+        return "BIGS";
+    }
 }
 
 void AP_OpenDroneID::init()
@@ -128,25 +172,19 @@ void AP_OpenDroneID::init()
 
     load_UAS_ID_from_persistent_memory();
     _chan = mavlink_channel_t(gcs().get_channel_from_port_number(_mav_port));
+    _last_uas_id_announce_ms = 0;
+    _uas_id_announce_count = 0;
     _initialised = true;
 }
 
 void AP_OpenDroneID::load_UAS_ID_from_persistent_memory()
 {
-    id_len = sizeof(id_str);
-    size_t id_type_len = sizeof(id_type);
-    size_t ua_type_len = sizeof(ua_type);
-    if (hal.util->get_persistent_param_by_name("DID_UAS_ID", id_str, id_len) &&
-        hal.util->get_persistent_param_by_name("DID_UAS_ID_TYPE", id_type, id_type_len) &&
-        hal.util->get_persistent_param_by_name("DID_UA_TYPE", ua_type, ua_type_len)) {
-        if (id_len && id_type_len && ua_type_len) {
-            _options.set_and_save(_options.get() & ~LockUASIDOnFirstBasicIDRx);
-            _options.notify();
-            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OpenDroneID: Locked UAS_ID: %s", id_str);
-        }
-    } else {
-        id_len = 0;
-        generate_UAS_ID_from_hardware_uid();
+    // Force deterministic ID generation from hardware UID at every boot.
+    // Persistent DID_UAS_ID values are intentionally ignored.
+    id_len = 0;
+    const bool generated = generate_UAS_ID_from_hardware_uid();
+    if (!generated) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OpenDroneID: UID-based UAS_ID generation failed");
     }
 }
 
@@ -169,7 +207,7 @@ bool AP_OpenDroneID::generate_UAS_ID_from_hardware_uid()
 
     // ANSI/CTA-2063 serial number layout used by opendroneid-core-c tests:
     // 4 chars manufacturer code, 1 char length, 15 chars serial payload.
-    static constexpr char kManufacturerCode[] = "BIGS";
+    const char *kManufacturerCode = selected_manufacturer_code();
     static constexpr uint8_t kPublicSerialPayloadLen = 15U;
     memcpy(id_str, kManufacturerCode, 4U);
     id_str[4] = odid_hex_length_digit(kPublicSerialPayloadLen);
@@ -190,6 +228,30 @@ bool AP_OpenDroneID::generate_UAS_ID_from_hardware_uid()
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OpenDroneID: HW serial seed: %s", hw_serial_seed_str);
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OpenDroneID: Generated CTA2063 UAS_ID: %s", id_str);
     return true;
+}
+
+void AP_OpenDroneID::send_transport_config_message()
+{
+    if (_chan == MAV_CHAN_INVALID) {
+        return;
+    }
+
+    const uint8_t ble_enable = _tx_ble.get() > 0 ? 1U : 0U;
+    const uint8_t nan_enable = _tx_nan.get() > 0 ? 1U : 0U;
+    const uint8_t beacon_enable = _tx_beacon.get() > 0 ? 1U : 0U;
+    const uint8_t transport_flags = static_cast<uint8_t>(ble_enable | (nan_enable << 1U) | (beacon_enable << 2U));
+    mavlink_msg_command_long_send(_chan,
+                                  0,
+                                  0,
+                                  kMavCmdUser1,
+                                  0,
+                                  kOdidTransportMagic,
+                                  float(transport_flags),
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  0);
 }
 
 void AP_OpenDroneID::set_basic_id() {
@@ -287,6 +349,34 @@ void AP_OpenDroneID::update()
             GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
                           "ODID: DID_MAVPORT=%d has no MAVLink channel",
                           int(_mav_port.get()));
+        }
+    }
+
+    if (_chan != MAV_CHAN_INVALID) {
+        const uint32_t now_ms = AP_HAL::millis();
+        const uint8_t desired_flags = static_cast<uint8_t>((_tx_ble.get() > 0 ? 1U : 0U) |
+                                                           ((_tx_nan.get() > 0 ? 1U : 0U) << 1U) |
+                                                           ((_tx_beacon.get() > 0 ? 1U : 0U) << 2U));
+        if (_last_transport_flags_sent != int8_t(desired_flags) ||
+            (now_ms - _last_transport_cfg_send_ms) >= 5000U) {
+            send_transport_config_message();
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                          "OpenDroneID: TXCFG flags=0x%02X ble=%u nan=%u bcn=%u",
+                          unsigned(desired_flags),
+                          unsigned((desired_flags & 0x01U) != 0U),
+                          unsigned((desired_flags & 0x02U) != 0U),
+                          unsigned((desired_flags & 0x04U) != 0U));
+            _last_transport_cfg_send_ms = now_ms;
+            _last_transport_flags_sent = int8_t(desired_flags);
+        }
+    }
+
+    const uint32_t now_ms = AP_HAL::millis();
+    if (id_len > 0U && _chan != MAV_CHAN_INVALID && _uas_id_announce_count < 3U) {
+        if (_last_uas_id_announce_ms == 0U || (now_ms - _last_uas_id_announce_ms) >= 3000U) {
+            _last_uas_id_announce_ms = now_ms;
+            _uas_id_announce_count++;
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OpenDroneID: Active UAS_ID: %s", id_str);
         }
     }
 
@@ -880,6 +970,20 @@ void AP_OpenDroneID::handle_msg(mavlink_channel_t chan, const mavlink_message_t 
             // we can only mark system as updated if we have the other
             // information already
             last_system_ms = last_system_update_ms;
+        }
+        break;
+    }
+    case MAVLINK_MSG_ID_COMMAND_ACK: {
+        if (chan != _chan) {
+            break;
+        }
+        mavlink_command_ack_t ack {};
+        mavlink_msg_command_ack_decode(&msg, &ack);
+        if (ack.command == kMavCmdUser1) {
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                          "OpenDroneID: TXCFG ACK result=%u progress=%u",
+                          unsigned(ack.result),
+                          unsigned(ack.progress));
         }
         break;
     }

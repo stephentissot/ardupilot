@@ -107,6 +107,10 @@ private:
     AP_UInt16 _options;
     AP_Int8  _mav_port;
     AP_Int8  _can_driver;
+    AP_Int8  _manufacturer_code;
+    AP_Int8  _tx_ble;
+    AP_Int8  _tx_nan;
+    AP_Int8  _tx_beacon;
 
     char ua_type[3];
     char id_type[3];
@@ -132,6 +136,10 @@ private:
     uint32_t _last_send_system_update_ms;
     uint32_t _last_send_static_messages_ms;
     uint32_t _last_chan_warn_ms;
+    uint32_t _last_uas_id_announce_ms;
+    uint32_t _last_transport_cfg_send_ms;
+    int8_t _last_transport_flags_sent;
+    uint8_t _uas_id_announce_count;
     static constexpr uint32_t _mavlink_dynamic_period_ms = 1000; //how often are mavlink dynamic messages sent in ms. E.g. 1000 = 1 Hz
     static constexpr uint32_t _mavlink_static_period_ms = 3000; //how often are mavlink static messages sent in ms
 
@@ -178,6 +186,8 @@ private:
     void send_self_id_message();
     void send_operator_id_message();
     void send_location_message();
+    void send_transport_config_message();
+    const char *selected_manufacturer_code() const;
     enum next_msg : uint8_t {
         NEXT_MSG_BASIC_ID = 0,
         NEXT_MSG_SYSTEM,
