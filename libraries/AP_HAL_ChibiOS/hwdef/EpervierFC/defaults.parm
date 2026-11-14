@@ -34,6 +34,8 @@ SERVO14_FUNCTION 120
 SERVO15_FUNCTION 120
 NTF_LED_TYPES 256
 NTF_LED_LEN 1
+NTF_BUZZ_TYPES 1
+NTF_BUZZ_VOLUME 50
 
 # No optional external rangefinder or Remote ID transmitter required yet.
 RNGFND1_TYPE 0

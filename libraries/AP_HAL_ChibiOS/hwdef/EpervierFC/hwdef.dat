@@ -110,10 +110,14 @@ PC7  TIM8_CH2 TIM8 PWM(10) GPIO(59)
 PC8  TIM8_CH3 TIM8 PWM(11) GPIO(60)
 PC9  TIM8_CH4 TIM8 PWM(12) GPIO(61)
 
-# Dedicated NeoPixel connectors, not motor outputs and NOT a PA0 buzzer.
-PA0 TIM2_CH1 TIM2 PWM(13) GPIO(62)
-PA1 TIM2_CH2 TIM2 PWM(14) GPIO(63)
-PA2 TIM2_CH3 TIM2 PWM(15) GPIO(64)
+# Reserve TIM2 exclusively for the passive buzzer on PA5 (J15).
+# ToneAlarm changes the timer period: never share TIM2 with NeoPixel outputs.
+PA5 TIM2_CH1 TIM2 GPIO(80) ALARM
+
+# Same NeoPixel pins/output numbering, independent timer for LED waveforms.
+PA0 TIM5_CH1 TIM5 PWM(13) GPIO(62)
+PA1 TIM5_CH2 TIM5 PWM(14) GPIO(63)
+PA2 TIM5_CH3 TIM5 PWM(15) GPIO(64)
 define DEFAULT_NTF_LED_TYPES 256
 
 # ADC3 support is a separate validation step. The current H723 MCU table
@@ -127,6 +131,7 @@ define AP_OPENDRONEID_ENABLED 1
 include ../include/minimize_features.inc
 undef HAL_DISPLAY_ENABLED
 define HAL_DISPLAY_ENABLED 1
+define AP_NOTIFY_TONEALARM_ENABLED 1
 
 define DEFAULT_SERIAL1_PROTOCOL SerialProtocol_MAVLink2
 define DEFAULT_SERIAL1_BAUD 115
