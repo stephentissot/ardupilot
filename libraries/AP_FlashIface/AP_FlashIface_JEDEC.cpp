@@ -266,7 +266,9 @@ bool AP_FlashIface_JEDEC::detect_device()
     #if AP_FLASH_STORAGE_DIAGNOSTICS
         diagnostics.jedec_id = uint32_t(buf[0]) << 16 | uint32_t(buf[1]) << 8 | buf[2];
         diagnostics.id_valid = true;
-        Msg_Print("ID=%06lx (W25Q64JV expected EF4017)", (unsigned long)diagnostics.jedec_id);
+        Msg_Print("ID=%06lx expected prefix=%02x%02x (%s)", (unsigned long)diagnostics.jedec_id,
+              unsigned(supported_devices[_dev_list_idx].manufacturer_id),
+              unsigned(supported_devices[_dev_list_idx].device_id), supported_devices[_dev_list_idx].name);
     #endif
 
         if (buf[0] != supported_devices[_dev_list_idx].manufacturer_id ||
