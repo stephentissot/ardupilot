@@ -81,6 +81,16 @@ private:
     bool dead;
     const char *last_error = nullptr;
     uint32_t last_error_report_ms = 0;
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    bool diagnostics_registered = false;
+    int mount_result = 0;
+    int format_result = 0;
+    int remount_result = 0;
+    bool format_attempted = false;
+    const char *io_error = nullptr;
+    uint32_t io_error_address = 0;
+    void report_diagnostics();
+#endif
 
     // Array of currently open file descriptors
     struct FileDescriptor {

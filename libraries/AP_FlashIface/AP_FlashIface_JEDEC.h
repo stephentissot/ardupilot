@@ -23,11 +23,28 @@
 
 #include "AP_FlashIface_Abstract.h"
 
+#ifndef AP_FLASH_STORAGE_DIAGNOSTICS
+#define AP_FLASH_STORAGE_DIAGNOSTICS 0
+#endif
 
 class AP_FlashIface_JEDEC : public AP_FlashIface
 {
 public:
     bool init() override;
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    struct DiagnosticInfo {
+        uint32_t jedec_id = 0;
+        uint32_t sfdp_header[2] {};
+        uint8_t status1 = 0;
+        uint8_t status2 = 0;
+        bool id_valid = false;
+        bool sfdp_valid = false;
+        bool status_valid = false;
+        bool reset_enable_ok = false;
+        bool reset_memory_ok = false;
+    };
+    const DiagnosticInfo &get_diagnostics() const { return diagnostics; }
+#endif
     const char *get_last_error() const
     {
         return last_error[0] != '\0' ? last_error : nullptr;
@@ -307,6 +324,9 @@ protected:
     bool initialised;
     bool write_enable_called;
     char last_error[48] {};
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    DiagnosticInfo diagnostics;
+#endif
 
     void set_last_error(const char *msg);
 };

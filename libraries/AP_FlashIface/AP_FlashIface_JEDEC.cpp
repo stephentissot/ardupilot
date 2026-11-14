@@ -135,6 +135,9 @@ void AP_FlashIface_JEDEC::set_last_error(const char *msg)
 bool AP_FlashIface_JEDEC::init()
 {
     set_last_error(nullptr);
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    diagnostics = {};
+#endif
 
     // Get device bus by name
     _dev = nullptr;
@@ -172,6 +175,7 @@ bool AP_FlashIface_JEDEC::init()
             set_last_error("detect failed");
         }
         Msg_Print("Failed to detect flash device: %s", supported_devices[_dev_list_idx].name);
+        Msg_Print("Detection error: %s", get_last_error());
         return false;
     }
 
@@ -182,6 +186,7 @@ bool AP_FlashIface_JEDEC::init()
             set_last_error("config failed");
         }
         Msg_Print("Failed to config flash device: %s", supported_devices[_dev_list_idx].name);
+        Msg_Print("Configuration error: %s", get_last_error());
         return false;
     }
 
@@ -210,7 +215,11 @@ void AP_FlashIface_JEDEC::reset_device()
     cmd.alt    =  0;
     cmd.dummy  =  0;
     _dev->set_cmd_header(cmd);
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    diagnostics.reset_enable_ok = _dev->transfer(nullptr, 0, nullptr, 0);
+#else
     _dev->transfer(nullptr, 0, nullptr, 0);
+#endif
 
 
     /* Single line N25Q_CMD_RESET_MEMORY command.*/
@@ -220,7 +229,12 @@ void AP_FlashIface_JEDEC::reset_device()
     cmd.alt   =  0;
     cmd.dummy =  0;
     _dev->set_cmd_header(cmd);
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    diagnostics.reset_memory_ok = _dev->transfer(nullptr, 0, nullptr, 0);
+    Msg_Print("Reset transfers: 66=%u 99=%u", unsigned(diagnostics.reset_enable_ok), unsigned(diagnostics.reset_memory_ok));
+#else
     _dev->transfer(nullptr, 0, nullptr, 0);
+#endif
 
     // By now we are pretty sure the chip is reset
 }
@@ -249,6 +263,11 @@ bool AP_FlashIface_JEDEC::detect_device()
             Debug("Failed to read Device ID");
             return false;
         }
+    #if AP_FLASH_STORAGE_DIAGNOSTICS
+        diagnostics.jedec_id = uint32_t(buf[0]) << 16 | uint32_t(buf[1]) << 8 | buf[2];
+        diagnostics.id_valid = true;
+        Msg_Print("ID=%06lx (W25Q64JV expected EF4017)", (unsigned long)diagnostics.jedec_id);
+    #endif
 
         if (buf[0] != supported_devices[_dev_list_idx].manufacturer_id ||
             buf[1] != supported_devices[_dev_list_idx].device_id) {
@@ -275,6 +294,11 @@ bool AP_FlashIface_JEDEC::detect_device()
             Debug("SFDP Header read failed");
             return false;
         }
+    #if AP_FLASH_STORAGE_DIAGNOSTICS
+        memcpy(diagnostics.sfdp_header, sfdp_header, sizeof(sfdp_header));
+        diagnostics.sfdp_valid = true;
+        Msg_Print("SFDP=%08lx/%08lx", (unsigned long)sfdp_header[0], (unsigned long)sfdp_header[1]);
+    #endif
 
         // Read Signature
         if (memcmp(sfdp_header, "SFDP", 4)) {
@@ -319,6 +343,10 @@ bool AP_FlashIface_JEDEC::detect_device()
         // Lets get the length of parameter table
         _desc.param_table_len = MIN(SFDP_PARAM_DWORD_LEN(param_header), 20UL);
         _desc.param_table_pointer = SFDP_PARAM_POINTER(param_header);
+    #if AP_FLASH_STORAGE_DIAGNOSTICS
+        Msg_Print("SFDP rev=%04x table=%lu words @%06lx", unsigned(_desc.param_rev),
+              (unsigned long)_desc.param_table_len, (unsigned long)_desc.param_table_pointer);
+    #endif
     }
 
     // Read and parse the param table
@@ -548,6 +576,12 @@ bool AP_FlashIface_JEDEC::configure_device()
             Debug("Failed reg2 read");
             return false;
         }
+    #if AP_FLASH_STORAGE_DIAGNOSTICS
+        diagnostics.status1 = reg1;
+        diagnostics.status2 = reg2;
+        diagnostics.status_valid = true;
+        Msg_Print("Before QE: SR1=%02x SR2=%02x", unsigned(reg1), unsigned(reg2));
+    #endif
         write_enable();
         wait_ready();
 
@@ -578,6 +612,11 @@ bool AP_FlashIface_JEDEC::configure_device()
             Debug("Failed to set QE bit");
             return false;
         }
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+        diagnostics.status2 = reg2;
+        Msg_Print("After QE: SR2=%02x read=%02x dummy=%u mode=%u", unsigned(reg2),
+                  unsigned(_desc.fast_read_ins), unsigned(_desc.fast_read_dummy_cycles), unsigned(_desc.fast_read_mode_clocks));
+#endif
 
         Debug("Device configured for 1-4-4 mode: QE bit 0x%x, fast read ins/cycles 0x%x/0x%x",
             _desc.quad_mode_enable, _desc.fast_read_ins, _desc.fast_read_dummy_cycles);

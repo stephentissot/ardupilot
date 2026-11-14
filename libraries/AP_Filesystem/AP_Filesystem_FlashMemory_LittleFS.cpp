@@ -27,6 +27,9 @@
 #include "AP_Filesystem.h"
 #include "AP_Filesystem_FlashMemory_LittleFS.h"
 #include <AP_RTC/AP_RTC.h>
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+#include <GCS_MAVLink/GCS.h>
+#endif
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 #include "bd/lfs_filebd.h"
@@ -556,11 +559,56 @@ AP_Filesystem_FlashMemory_LittleFS::FileDescriptor* AP_Filesystem_FlashMemory_Li
 void AP_Filesystem_FlashMemory_LittleFS::mark_dead()
 {
     if (!dead) {
-        printf("FlashMemory_LittleFS: dead\n");
+        printf("FlashMemory_LittleFS: dead: %s\n", last_error != nullptr ? last_error : "unspecified");
         free_all_fds();
         dead = true;
     }
 }
+
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+// Replay cached results after USB/GCS connection. Never retry flash operations
+// here: an unavailable backend stays unavailable until the next boot.
+void AP_Filesystem_FlashMemory_LittleFS::report_diagnostics()
+{
+    const uint32_t now = AP_HAL::millis();
+    if (now - last_error_report_ms < 15000 || (!dead && now > 120000)) {
+        return;
+    }
+    // Diagnostics must not stall the IO thread during a slow mount/write.
+    if (!fs_sem.take_nonblocking()) {
+        return;
+    }
+    last_error_report_ms = now;
+    GCS_SEND_TEXT(dead ? MAV_SEVERITY_ERROR : MAV_SEVERITY_INFO,
+                  "LFS: %s", last_error != nullptr ? last_error : (mounted ? "mounted" : "not mounted"));
+    if (use_wspi_flash) {
+        const auto &d = wspi_dev.get_diagnostics();
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "LFS: reset66=%u reset99=%u ID=%06lx valid=%u",
+                      unsigned(d.reset_enable_ok), unsigned(d.reset_memory_ok),
+                      (unsigned long)d.jedec_id, unsigned(d.id_valid));
+        if (d.sfdp_valid) {
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "LFS: SFDP=%08lx/%08lx rev=%04x",
+                          (unsigned long)d.sfdp_header[0], (unsigned long)d.sfdp_header[1],
+                          unsigned(d.sfdp_header[1] & 0xffff));
+        }
+        if (d.status_valid) {
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "LFS: SR1=%02x SR2=%02x (last init samples)",
+                          unsigned(d.status1), unsigned(d.status2));
+        }
+    }
+    if (fs_cfg.block_count != 0) {
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "LFS: page=%lu block=%lu count=%lu",
+                      (unsigned long)fs_cfg.prog_size, (unsigned long)fs_cfg.block_size,
+                      (unsigned long)fs_cfg.block_count);
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "LFS: mount=%d format=%d remount=%d tried=%u",
+                      mount_result, format_result, remount_result, unsigned(format_attempted));
+    }
+    if (io_error != nullptr) {
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "LFS: %s @%06lx", io_error, (unsigned long)io_error_address);
+    }
+    fs_sem.give();
+}
+#endif
 
 /* ************************************************************************* */
 /* Low-level flash memory access                                             */
@@ -881,6 +929,13 @@ bool AP_Filesystem_FlashMemory_LittleFS::mount_filesystem() {
 
     EXPECT_DELAY_MS(3000);
 
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    if (!diagnostics_registered) {
+        hal.scheduler->register_io_process(FUNCTOR_BIND_MEMBER(&AP_Filesystem_FlashMemory_LittleFS::report_diagnostics, void));
+        diagnostics_registered = true;
+    }
+    printf("LFS: starting flash init\n");
+#endif
     fs_cfg.context = this;
 #if CONFIG_HAL_BOARD != HAL_BOARD_SITL
     fs_cfg.read = flashmem_read;
@@ -918,6 +973,10 @@ bool AP_Filesystem_FlashMemory_LittleFS::mount_filesystem() {
 
     uint32_t id = find_block_size_and_count();
 
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    printf("LFS: geometry page=%lu block=%lu count=%lu\n", (unsigned long)fs_cfg.prog_size,
+           (unsigned long)fs_cfg.block_size, (unsigned long)fs_cfg.block_count);
+#endif
     if (!id) {
         last_error = "geometry detect failed";
         mark_dead();
@@ -930,18 +989,34 @@ bool AP_Filesystem_FlashMemory_LittleFS::mount_filesystem() {
         return false;
     }
 #endif
-    if (lfs_mount(&fs, &fs_cfg) < 0) {
+    int result = lfs_mount(&fs, &fs_cfg);
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    mount_result = result;
+    printf("LFS: mount=%d\n", result);
+#endif
+    if (result < 0) {
         /* maybe not formatted? try formatting it */
         last_error = "mount failed";
 
-        if (lfs_format(&fs, &fs_cfg) < 0) {
+        result = lfs_format(&fs, &fs_cfg);
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+        format_attempted = true;
+        format_result = result;
+        printf("LFS: existing automatic format=%d\n", result);
+#endif
+        if (result < 0) {
             last_error = "format failed";
             mark_dead();
             return false;
         }
 
         /* try mounting again */
-        if (lfs_mount(&fs, &fs_cfg) < 0) {
+        result = lfs_mount(&fs, &fs_cfg);
+    #if AP_FLASH_STORAGE_DIAGNOSTICS
+        remount_result = result;
+        printf("LFS: remount=%d\n", result);
+    #endif
+        if (result < 0) {
             /* cannot mount after formatting */
             last_error = "remount failed";
             mark_dead();
@@ -952,11 +1027,17 @@ bool AP_Filesystem_FlashMemory_LittleFS::mount_filesystem() {
     // try to create the root storage folder. Ignore the error code in case
     // the filesystem is corrupted or it already exists.
     if (strlen(HAL_BOARD_STORAGE_DIRECTORY) > 0) {
-        lfs_mkdir(&fs, HAL_BOARD_STORAGE_DIRECTORY);
+        result = lfs_mkdir(&fs, HAL_BOARD_STORAGE_DIRECTORY);
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+        printf("LFS: mkdir %s=%d\n", HAL_BOARD_STORAGE_DIRECTORY, result);
+#endif
     }
 
     // Force garbage collection to avoid expensive operations after boot
-    lfs_fs_gc(&fs);
+    result = lfs_fs_gc(&fs);
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+    printf("LFS: gc=%d, mounted\n", result);
+#endif
     last_error = nullptr;
     mounted = true;
     return true;
@@ -1081,7 +1162,14 @@ int AP_Filesystem_FlashMemory_LittleFS::_flashmem_read(
     uint8_t* p = static_cast<uint8_t*>(buffer);
 
     if (use_wspi_flash) {
-        return wspi_dev.read(address, p, size) ? LFS_ERR_OK : LFS_ERR_IO;
+        const bool ok = wspi_dev.read(address, p, size);
+    #if AP_FLASH_STORAGE_DIAGNOSTICS
+        if (!ok && io_error == nullptr) {
+            io_error = "WSPI read failed";
+            io_error_address = address;
+        }
+    #endif
+        return ok ? LFS_ERR_OK : LFS_ERR_IO;
     }
 
     while (num_pages--) {
@@ -1141,6 +1229,12 @@ int AP_Filesystem_FlashMemory_LittleFS::_flashmem_prog(
             if (!wspi_dev.start_program_offset(address, p, page_size, programming, delay_us, timeout_us) ||
                 programming != page_size ||
                 !wait_until_device_is_ready()) {
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+                if (io_error == nullptr) {
+                    io_error = "WSPI program/ready failed";
+                    io_error_address = address;
+                }
+#endif
                 return LFS_ERR_IO;
             }
 
@@ -1198,6 +1292,12 @@ int AP_Filesystem_FlashMemory_LittleFS::_flashmem_erase(lfs_block_t block) {
         uint32_t timeout_ms = 0;
         if (!wspi_dev.start_erase_offset(block * fs_cfg.block_size, fs_cfg.block_size, erasing, delay_ms, timeout_ms) ||
             erasing != fs_cfg.block_size) {
+#if AP_FLASH_STORAGE_DIAGNOSTICS
+            if (io_error == nullptr) {
+                io_error = "WSPI erase failed";
+                io_error_address = block * fs_cfg.block_size;
+            }
+#endif
             return LFS_ERR_IO;
         }
 
