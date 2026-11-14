@@ -1,0 +1,22 @@
+# Damaged-board diagnostic ONLY. Never use this target for flight.
+# Sync EpervierFC before building: this definition inherits its routed pins.
+include ../EpervierFC/hwdef.dat
+USB_STRING_PRODUCT "EpervierFC-IMU-Bench"
+
+# U16 was mounted backwards and destroyed during removal. Do not probe it.
+undef BARO
+define HAL_BARO_ALLOW_INIT_NO_BARO 1
+define AP_BARO_PROBE_EXTERNAL_I2C_BUSES 0
+
+# Isolate the damaged I2C sensor bus from this SPI-only IMU validation.
+undef COMPASS
+undef AP_COMPASS_PROBING_ENABLED
+define AP_COMPASS_PROBING_ENABLED 0
+# Keep the compass frontend: this Copter checkout references it unconditionally.
+# No explicit or automatic compass probes are enabled in this target.
+undef HAL_DISPLAY_ENABLED
+define HAL_DISPLAY_ENABLED 0
+
+# Both ICM42688 probes, USB, storage and motor-inhibiting defaults are inherited.
+# HAL_BARO_ALLOW_INIT_NO_BARO also skips the barometer arming check upstream.
+# ESCs/servos MUST be physically disconnected; keep all other arming checks.
