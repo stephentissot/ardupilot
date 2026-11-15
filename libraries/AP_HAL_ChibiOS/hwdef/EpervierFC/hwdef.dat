@@ -68,6 +68,8 @@ PB7 I2C1_SDA I2C1
 PF1 I2C2_SCL I2C2
 PF0 I2C2_SDA I2C2
 I2C_ORDER I2C1 I2C2
+# Bench-only, one read scan at boot; cached results replayed over MAVLink.
+define HAL_I2C_DIAGNOSTIC_BUS 1
 
 PB12 ICM42688_1_CS CS
 PB13 SPI2_SCK SPI2

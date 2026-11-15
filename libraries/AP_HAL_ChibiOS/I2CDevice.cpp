@@ -18,6 +18,9 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
+#ifdef HAL_I2C_DIAGNOSTIC_BUS
+#include <GCS_MAVLink/GCS.h>
+#endif
 #include "Util.h"
 #include "GPIO.h"
 
@@ -461,6 +464,107 @@ I2CDeviceManager::get_device_ptr(uint8_t bus, uint8_t address,
     }
     return NEW_NOTHROW I2CDevice(bus, address, bus_clock, use_smbus, timeout_ms);
 }
+
+#ifdef HAL_I2C_DIAGNOSTIC_BUS
+/*
+  One boot-only scan of non-reserved 7-bit addresses. The ChibiOS receive
+  API requires a nonzero length: read one byte, never write a command or
+  register. This is a read-response scan, not sensor identification, and can
+  advance a device's read pointer. Enable only on a bench, not in flight.
+  One bounded transfer per IO invocation, without waiting for the bus lock.
+  Results are cached, so a late USB connection does not restart the scan.
+ */
+void I2CDeviceManager::diagnostic_scan()
+{
+    constexpr uint8_t busidx = HAL_I2C_DIAGNOSTIC_BUS - HAL_I2C_BUS_BASE;
+    static_assert(busidx < ARRAY_SIZE(I2CD), "Invalid diagnostic I2C bus");
+    const uint32_t now = AP_HAL::millis();
+    if (now < 5000) {
+        return;
+    }
+    if (hal.util->get_soft_armed()) {
+        // Never resume an incomplete scan after an arming event.
+        if (diagnostic_address <= 0x77) {
+            diagnostic_cancelled = true;
+            diagnostic_address = 0x78;
+        }
+        return;
+    }
+
+    if (diagnostic_address <= 0x77) {
+        if (now - diagnostic_last_step_ms < 20) {
+            return;
+        }
+        diagnostic_last_step_ms = now;
+        if (!diagnostic_device) {
+            // Same default bus speed as normal probes; 1ms, no retries.
+            diagnostic_device = get_device(HAL_I2C_DIAGNOSTIC_BUS, 0x08, 400000, false, 1);
+            if (!diagnostic_device) {
+                diagnostic_cancelled = true;
+                diagnostic_address = 0x78;
+                return;
+            }
+            diagnostic_device->set_retries(0);
+        }
+        auto *sem = diagnostic_device->get_semaphore();
+        if (!sem->take_nonblocking()) {
+            return;
+        }
+        const auto &info = I2CD[busidx];
+        // Do not clock a bus already held low or change its GPIO modes.
+        if (!palReadLine(info.scl_line) || !palReadLine(info.sda_line)) {
+            diagnostic_skipped++;
+        } else {
+            diagnostic_device->set_address(diagnostic_address);
+            uint8_t value;
+            if (diagnostic_device->transfer(nullptr, 0, &value, 1)) {
+                diagnostic_found[diagnostic_address / 8] |= 1U << (diagnostic_address % 8);
+                diagnostic_count++;
+            } else {
+                diagnostic_errors |= i2cGetErrors(info.i2c);
+            }
+        }
+        sem->give();
+        diagnostic_address++;
+        return;
+    }
+
+    // Replay one small message at a time, even in the sensor-error loop.
+    // No further I2C transactions; the bitmap describes this boot's scan.
+    if (diagnostic_report_address == 0) {
+        if (now - diagnostic_last_report_ms < 15000) {
+            return;
+        }
+        diagnostic_last_report_ms = now;
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "I2C%u scan: %s, %u responses, %u skipped",
+                      unsigned(I2CD[busidx].instance), diagnostic_cancelled ? "aborted" : "done",
+                      unsigned(diagnostic_count), unsigned(diagnostic_skipped));
+        diagnostic_report_address = 1;
+        return;
+    }
+    if (now - diagnostic_last_step_ms < 200) {
+        return;
+    }
+    diagnostic_last_step_ms = now;
+    if (diagnostic_report_address == 1) {
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "I2C%u scan: cached bus%u err=0x%lx",
+                      unsigned(I2CD[busidx].instance), unsigned(HAL_I2C_DIAGNOSTIC_BUS),
+                      (unsigned long)diagnostic_errors);
+        diagnostic_report_address = 0x08;
+        return;
+    }
+    for (; diagnostic_report_address <= 0x77; diagnostic_report_address++) {
+        const uint8_t addr = diagnostic_report_address;
+        if ((diagnostic_found[addr / 8] & (1U << (addr % 8))) != 0) {
+            diagnostic_report_address++;
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "I2C%u scan: response at 0x%02x",
+                          unsigned(I2CD[busidx].instance), unsigned(addr));
+            return;
+        }
+    }
+    diagnostic_report_address = 0;
+}
+#endif
 
 /*
   get mask of bus numbers for all configured I2C buses

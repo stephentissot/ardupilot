@@ -146,6 +146,23 @@ public:
       get mask of bus numbers for all configured internal I2C buses
      */
     uint32_t get_bus_mask_internal(void) const override;
+
+#ifdef HAL_I2C_DIAGNOSTIC_BUS
+    // Opt-in bench diagnostic, registered after scheduler initialisation.
+    void diagnostic_scan();
+
+private:
+    AP_HAL::OwnPtr<AP_HAL::I2CDevice> diagnostic_device;
+    uint8_t diagnostic_found[16] {};
+    uint8_t diagnostic_address = 0x08;
+    uint8_t diagnostic_count = 0;
+    uint8_t diagnostic_skipped = 0;
+    uint8_t diagnostic_report_address = 0;
+    uint32_t diagnostic_last_step_ms = 0;
+    uint32_t diagnostic_last_report_ms = 0;
+    uint32_t diagnostic_errors = 0;
+    bool diagnostic_cancelled = false;
+#endif
 };
 }
 

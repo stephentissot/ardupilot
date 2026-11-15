@@ -30,6 +30,9 @@
 #include "Scheduler.h"
 #include "Util.h"
 #include "GPIO.h"
+#if HAL_USE_I2C && defined(HAL_I2C_DIAGNOSTIC_BUS)
+#include "I2CDevice.h"
+#endif
 
 #include <AP_HAL_ChibiOS/UARTDriver.h>
 #include <AP_HAL_ChibiOS/AnalogIn.h>
@@ -102,6 +105,11 @@ void Scheduler::init()
 {
     chBSemObjectInit(&_timer_semaphore, false);
     chBSemObjectInit(&_io_semaphore, false);
+
+#if HAL_USE_I2C && defined(HAL_I2C_DIAGNOSTIC_BUS)
+    register_io_process(FUNCTOR_BIND(I2CDeviceManager::from(hal.i2c_mgr),
+                                    &I2CDeviceManager::diagnostic_scan, void));
+#endif
 
 #if HAL_MONITOR_THREAD_ENABLED
     // setup the monitor thread - this is used to detect software lockups
