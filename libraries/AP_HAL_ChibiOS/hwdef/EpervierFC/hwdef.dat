@@ -62,7 +62,7 @@ OSPIDEV w25q-dtr OCTOSPI1 MODE3 80*MHZ 23 1
 DATAFLASH littlefs:jedec_nor
 define AP_FLASH_STORAGE_DIAGNOSTICS 1
 
-# Main sensors on bus 0; optional OLED / VL53L0X on bus 1.
+# Main sensors on bus 0; external GY-63 / OLED / VL53L0X on bus 1.
 PB6 I2C1_SCL I2C1
 PB7 I2C1_SDA I2C1
 PF1 I2C2_SCL I2C2
@@ -95,6 +95,10 @@ define HAL_DEFAULT_INS_FAST_SAMPLE 1
 # acceptance of its ID, pressure and temperature remains an on-board test.
 BARO DPS310 I2C:0:0x76
 BARO DPS310 I2C:0:0x77
+# Optional GY-63 (MS5611) on physical I2C2, logical bus 1.
+# Either barometer may be absent; at least one must initialise normally.
+BARO MS5611 I2C:1:0x77
+BARO MS5611 I2C:1:0x76
 COMPASS IST8310 I2C:0:0x0E false ROTATION_NONE
 define AP_COMPASS_PROBING_ENABLED 1
 define HAL_I2C_INTERNAL_MASK 1
