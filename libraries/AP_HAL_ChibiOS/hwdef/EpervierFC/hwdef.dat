@@ -88,9 +88,11 @@ PB10 ICM42688_2_CLKIN INPUT
 # Use the existing Invensensev3 backend without driving CLKIN/INT2.
 SPIDEV icm42688_1 SPI2 DEVID1 ICM42688_1_CS MODE3 1*MHZ 8*MHZ
 SPIDEV icm42688_2 SPI4 DEVID2 ICM42688_2_CS MODE3 1*MHZ 8*MHZ
-# Orientations are provisional: validate BOTH sensors against PCB axes.
-IMU Invensensev3 SPI:icm42688_1 ROTATION_NONE
-IMU Invensensev3 SPI:icm42688_2 ROTATION_NONE
+# 2026-11-16: measured axes with AHRS_ORIENTATION=0, pins 12..14 forward.
+# U14 top/SPI2: (x,y,z)->(y,x,-z); U15 bottom/SPI4: (x,y,z)->(-y,x,z).
+# Recalibrate accelerometers and verify all gyro signs after flashing.
+IMU Invensensev3 SPI:icm42688_1 ROTATION_ROLL_180_YAW_90
+IMU Invensensev3 SPI:icm42688_2 ROTATION_YAW_90
 define HAL_DEFAULT_INS_FAST_SAMPLE 1
 
 # DPS368 uses the DPS280/DPS310 register-family backend. Probe both straps;
