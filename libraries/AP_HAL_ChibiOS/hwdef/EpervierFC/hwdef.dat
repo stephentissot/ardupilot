@@ -133,12 +133,18 @@ define DEFAULT_NTF_LED_TYPES 256
 
 # H723 ADC3 differs from ADC12 and is unsupported by ChibiOS ADCv4.
 # Dedicated bench owner sets these reserved inputs analog at runtime.
-# Keep normal AnalogIn/battery monitoring disabled; never substitute ADC1.
+# Use the board-only AnalogIn adapter; never substitute ADC1 mappings.
 PF3 VBAT_SENSE_RESERVED INPUT
 PF4 CURRENT_SENSE_RESERVED INPUT
 define HAL_USE_ADC FALSE
+define HAL_H723_ADC3_ANALOG_ENABLED 1
 define HAL_H723_ADC3_BENCH_DIAGNOSTICS 1
 define HAL_H723_ADC3_BENCH_VBAT_RATIO 11
+# Logical AnalogIn IDs, not MCU pin numbers. Current scale 0 means uncalibrated.
+define HAL_BATT_VOLT_PIN 5
+define HAL_BATT_VOLT_SCALE 11.0f
+define HAL_BATT_CURR_PIN 9
+define HAL_BATT_CURR_SCALE 0.0f
 define AP_SCRIPTING_ENABLED 0
 
 define AP_OPENDRONEID_ENABLED 1

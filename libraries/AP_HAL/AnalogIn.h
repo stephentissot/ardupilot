@@ -15,6 +15,13 @@ public:
     // against a reference voltage
     virtual float voltage_average() = 0;
 
+    // Read voltage and availability from the same sample snapshot. Existing
+    // drivers have no freshness contract; cached drivers may override this.
+    virtual bool voltage_average_healthy(float &voltage) {
+        voltage = voltage_average();
+        return true;
+    }
+
     // return a voltage from 0.0 to 5.0V, scaled
     // against a reference voltage
     virtual float voltage_latest() = 0;

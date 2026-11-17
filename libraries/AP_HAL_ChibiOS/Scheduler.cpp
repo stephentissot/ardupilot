@@ -107,7 +107,7 @@ void Scheduler::init()
     chBSemObjectInit(&_timer_semaphore, false);
     chBSemObjectInit(&_io_semaphore, false);
 
-#if HAL_H723_ADC3_BENCH_DIAGNOSTICS
+#if HAL_H723_ADC3_BENCH_DIAGNOSTICS || HAL_H723_ADC3_ANALOG_ENABLED
     register_io_process(FUNCTOR_BIND(&H723ADC3Bench::instance(),
                                     &H723ADC3Bench::update, void));
 #endif

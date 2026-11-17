@@ -155,9 +155,21 @@ AP_BattMonitor_Analog::read()
     if (_state.type != AP_BattMonitor::Type::ANALOG_CURRENT_ONLY) {
         // this copes with changing the pin at runtime
         _state.healthy = _volt_pin_analog_source->set_pin(_volt_pin);
+        float voltage = 0.0f;
+        _state.healthy &= _volt_pin_analog_source->voltage_average_healthy(voltage);
+
+        // Some sources can become unavailable (e.g. stale board ADC cache).
+        // Never integrate current across a period of missing measurements.
+        if (!_state.healthy) {
+            _state.voltage = 0.0f;
+            _state.voltage_resting_estimate = 0.0f;
+            _state.current_amps = 0.0f;
+            _state.last_time_micros = 0;
+            return;
+        }
 
         // get voltage
-        _state.voltage = (_volt_pin_analog_source->voltage_average() - _volt_offset) * _volt_multiplier;
+        _state.voltage = (voltage - _volt_offset) * _volt_multiplier;
     } else {
         _state.healthy = 1;
         _state.voltage = 0.0f;
@@ -167,13 +179,24 @@ AP_BattMonitor_Analog::read()
     if (has_current()) {
         // calculate time since last current read
         const uint32_t tnow = AP_HAL::micros();
-        const uint32_t dt_us = tnow - _state.last_time_micros;
+        const uint32_t dt_us = _state.last_time_micros == 0 ? 0 : tnow - _state.last_time_micros;
 
         // this copes with changing the pin at runtime
         _state.healthy &= _curr_pin_analog_source->set_pin(_curr_pin);
+        float current_voltage = 0.0f;
+        _state.healthy &= _curr_pin_analog_source->voltage_average_healthy(current_voltage);
+
+        // A zero gain cannot represent a calibrated current sensor.
+        // Board defaults may deliberately use zero until calibration is known.
+        if (!_state.healthy || is_zero(_curr_amp_per_volt.get())) {
+            _state.healthy = false;
+            _state.current_amps = 0.0f;
+            _state.last_time_micros = 0;
+            return;
+        }
 
         // read current
-        _state.current_amps = (_curr_pin_analog_source->voltage_average() - _curr_amp_offset) * _curr_amp_per_volt;
+        _state.current_amps = (current_voltage - _curr_amp_offset) * _curr_amp_per_volt;
 
         update_consumed(_state, dt_us);
 

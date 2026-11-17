@@ -40,7 +40,14 @@ NTF_BUZZ_VOLUME 50
 # No optional external rangefinder or Remote ID transmitter required yet.
 RNGFND1_TYPE 0
 DID_ENABLE 0
-BATT_MONITOR 0
+# Voltage only until the ESC CUR transfer function is calibrated.
+# Saved parameters override these defaults; explicitly set after upgrade.
+BATT_MONITOR 3
+BATT_VOLT_PIN 5
+BATT_VOLT_MULT 11
+BATT_CURR_PIN 9
+BATT_AMP_PERVLT 0
+BATT_AMP_OFFSET 0
 
 # Keep compass use and normal arming checks: calibration is still required.
 COMPASS_USE 1

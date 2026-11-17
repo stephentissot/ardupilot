@@ -2,6 +2,10 @@
 
 #include <hwdef.h>
 
+#ifndef HAL_H723_ADC3_ANALOG_ENABLED
+#define HAL_H723_ADC3_ANALOG_ENABLED 0
+#endif
+
 #define HAL_BOARD_NAME "ChibiOS"
 
 #ifdef HAL_HAVE_PIXRACER_LED

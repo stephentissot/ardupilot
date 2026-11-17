@@ -24,6 +24,7 @@
 #include "USB_Debug.h"
 #include <AP_HAL_Empty/AP_HAL_Empty_Private.h>
 #include <AP_HAL_ChibiOS/AP_HAL_ChibiOS_Private.h>
+#include "H723AnalogIn.h"
 #include "shared_dma.h"
 #include "sdcard.h"
 #include "USB_MSD.h"
@@ -87,7 +88,9 @@ static ChibiOS::SPIDeviceManager spiDeviceManager;
 static Empty::SPIDeviceManager spiDeviceManager;
 #endif
 
-#if HAL_USE_ADC == TRUE && !defined(HAL_DISABLE_ADC_DRIVER)
+#if HAL_H723_ADC3_ANALOG_ENABLED
+static ChibiOS::H723AnalogIn analogIn;
+#elif HAL_USE_ADC == TRUE && !defined(HAL_DISABLE_ADC_DRIVER)
 static ChibiOS::AnalogIn analogIn;
 #else
 static Empty::AnalogIn analogIn;
