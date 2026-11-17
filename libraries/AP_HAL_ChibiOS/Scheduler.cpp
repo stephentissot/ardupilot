@@ -30,6 +30,7 @@
 #include "Scheduler.h"
 #include "Util.h"
 #include "GPIO.h"
+#include "H723ADC3Bench.h"
 #if HAL_USE_I2C && defined(HAL_I2C_DIAGNOSTIC_BUS)
 #include "I2CDevice.h"
 #endif
@@ -105,6 +106,11 @@ void Scheduler::init()
 {
     chBSemObjectInit(&_timer_semaphore, false);
     chBSemObjectInit(&_io_semaphore, false);
+
+#if HAL_H723_ADC3_BENCH_DIAGNOSTICS
+    register_io_process(FUNCTOR_BIND(&H723ADC3Bench::instance(),
+                                    &H723ADC3Bench::update, void));
+#endif
 
 #if HAL_USE_I2C && defined(HAL_I2C_DIAGNOSTIC_BUS)
     register_io_process(FUNCTOR_BIND(I2CDeviceManager::from(hal.i2c_mgr),

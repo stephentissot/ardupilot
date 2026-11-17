@@ -131,11 +131,14 @@ PA1 TIM5_CH2 TIM5 PWM(14) GPIO(63)
 PA2 TIM5_CH3 TIM5 PWM(15) GPIO(64)
 define DEFAULT_NTF_LED_TYPES 256
 
-# ADC3 support is a separate validation step. The current H723 MCU table
-# lacks ADC3_map: never substitute ADC1 or invent current-sense scaling.
+# H723 ADC3 differs from ADC12 and is unsupported by ChibiOS ADCv4.
+# Dedicated bench owner sets these reserved inputs analog at runtime.
+# Keep normal AnalogIn/battery monitoring disabled; never substitute ADC1.
 PF3 VBAT_SENSE_RESERVED INPUT
 PF4 CURRENT_SENSE_RESERVED INPUT
 define HAL_USE_ADC FALSE
+define HAL_H723_ADC3_BENCH_DIAGNOSTICS 1
+define HAL_H723_ADC3_BENCH_VBAT_RATIO 11
 define AP_SCRIPTING_ENABLED 0
 
 define AP_OPENDRONEID_ENABLED 1
